@@ -11,7 +11,10 @@ import {
   ShieldAlert,
   Cpu,
   Layers,
-  Sparkles
+  Sparkles,
+  RotateCw,
+  Grid,
+  Move
 } from 'lucide-react';
 import {
   DeviceProject,
@@ -25,6 +28,10 @@ import {
 interface SchematicCanvasProps {
   project: DeviceProject;
   onUpdateComponentPosition: (componentId: string, x: number, y: number) => void;
+  onUpdateComponentTransform?: (
+    componentId: string,
+    transform: { x?: number; y?: number; rotation?: number; scale?: number }
+  ) => void;
   onAddWire: (wire: Omit<WireConnection, 'id'>) => void;
   onDeleteWire: (wireId: string) => void;
   onRemoveComponent: (componentId: string) => void;
@@ -41,6 +48,7 @@ interface PendingWireConnection {
 export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   project,
   onUpdateComponentPosition,
+  onUpdateComponentTransform,
   onAddWire,
   onDeleteWire,
   onRemoveComponent
@@ -52,6 +60,12 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   const [pan, setPan] = useState({ x: 40, y: 30 });
   const [isPanning, setIsPanning] = useState(false);
   const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+
+  // Grid Snapping
+  const [snapToGrid, setSnapToGrid] = useState(false);
+
+  // Selected Component & Transformation
+  const [selectedCompId, setSelectedCompId] = useState<string | null>(null);
 
   // Dragging Component
   const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
@@ -75,7 +89,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   // Fixed MCU board position on canvas
   const mcuPos = { x: 70, y: 60 };
 
-  // Calculate pin world coordinates for wire routing
+  // Calculate pin world coordinates with rotation & scaling support
   const getPinCoordinate = (componentId: string, pinId: string): { x: number; y: number } => {
     if (componentId === 'mcu') {
       const pin = project.mcu.pins.find((p) => p.id === pinId);
@@ -94,9 +108,26 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     if (!pin) return { x: comp.x + 120, y: comp.y + 60 };
 
     const compWidth = comp.width || 240;
+    const compHeight = comp.height || (60 + Math.max(comp.pins.length / 2, 2) * 26);
+    const scale = comp.scale || 1.0;
+    const rotationDeg = comp.rotation || 0;
+    const rad = (rotationDeg * Math.PI) / 180;
+
     const isLeft = pin.side === 'left';
-    const x = isLeft ? comp.x : comp.x + compWidth;
-    const y = comp.y + 55 + (pin.order - 1) * 26;
+    const localX = isLeft ? 0 : compWidth;
+    const localY = 55 + (pin.order - 1) * 26;
+
+    // Component Center in world coordinates
+    const cx = comp.x + compWidth / 2;
+    const cy = comp.y + compHeight / 2;
+
+    // Offset from center with scale
+    const dx = (localX - compWidth / 2) * scale;
+    const dy = (localY - compHeight / 2) * scale;
+
+    // Apply 2D rotation matrix
+    const x = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
+    const y = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
     return { x, y };
   };
 
@@ -124,9 +155,13 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     }
 
     if (draggingCompId) {
-      const newX = Math.round(coords.x - dragOffset.x);
-      const newY = Math.round(coords.y - dragOffset.y);
-      onUpdateComponentPosition(draggingCompId, Math.max(380, newX), Math.max(10, newY));
+      let newX = coords.x - dragOffset.x;
+      let newY = coords.y - dragOffset.y;
+      if (snapToGrid) {
+        newX = Math.round(newX / 20) * 20;
+        newY = Math.round(newY / 20) * 20;
+      }
+      onUpdateComponentPosition(draggingCompId, Math.max(380, Math.round(newX)), Math.max(10, Math.round(newY)));
     }
   };
 
@@ -136,6 +171,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
       setIsPanning(true);
       setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       setSelectedWireId(null);
+      setSelectedCompId(null);
     }
   };
 
@@ -297,7 +333,93 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
         <span className="text-[11px] font-mono px-2 text-slate-400">
           {Math.round(zoom * 100)}%
         </span>
+        <div className="w-px h-4 bg-slate-800 mx-0.5" />
+        <button
+          onClick={() => setSnapToGrid(!snapToGrid)}
+          className={`p-1.5 rounded transition-colors ${
+            snapToGrid
+              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
+              : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
+          }`}
+          title={snapToGrid ? 'Snap to Grid: ON (20px)' : 'Snap to Grid: OFF'}
+          aria-label="Toggle Grid Snapping"
+        >
+          <Grid className="w-4 h-4" />
+        </button>
       </div>
+
+      {/* Selected Component Transform Floating Gizmo */}
+      {selectedCompId && (() => {
+        const selectedComp = project.components.find((c) => c.id === selectedCompId);
+        if (!selectedComp) return null;
+        const currentRotation = selectedComp.rotation || 0;
+        const currentScale = selectedComp.scale || 1.0;
+
+        return (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-slate-900/95 backdrop-blur border border-cyan-500/50 text-slate-200 px-3.5 py-1.5 rounded-xl shadow-2xl text-xs animate-in fade-in">
+            <div className="flex items-center gap-1.5 border-r border-slate-700/80 pr-2.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="font-semibold text-white truncate max-w-[120px]">{selectedComp.name}</span>
+            </div>
+
+            {/* Rotate Clockwise 90deg */}
+            <button
+              onClick={() => {
+                const nextRot = ((selectedComp.rotation || 0) + 90) % 360;
+                onUpdateComponentTransform?.(selectedComp.id, { rotation: nextRot });
+              }}
+              className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-1 rounded transition-colors cursor-pointer"
+              title="Rotate 90° Clockwise"
+            >
+              <RotateCw className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="font-mono text-[11px]">{currentRotation}°</span>
+            </button>
+
+            {/* Scale Slider */}
+            <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 font-mono">Scale:</span>
+              <input
+                type="range"
+                min="0.6"
+                max="1.8"
+                step="0.1"
+                value={currentScale}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  onUpdateComponentTransform?.(selectedComp.id, { scale: val });
+                }}
+                className="w-16 accent-cyan-400 cursor-pointer h-1"
+                title={`Scale: ${currentScale.toFixed(1)}x`}
+              />
+              <span className="font-mono text-[10px] text-cyan-300 w-7 text-right">
+                {currentScale.toFixed(1)}x
+              </span>
+            </div>
+
+            {/* Reset Transform */}
+            {(currentRotation !== 0 || currentScale !== 1.0) && (
+              <button
+                onClick={() => {
+                  onUpdateComponentTransform?.(selectedComp.id, { rotation: 0, scale: 1.0 });
+                }}
+                className="text-[10px] font-mono text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Reset Transform to 0° 1.0x"
+              >
+                Reset
+              </button>
+            )}
+
+            {/* Close Gizmo */}
+            <button
+              onClick={() => setSelectedCompId(null)}
+              className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors ml-1 cursor-pointer"
+              title="Deselect"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Wire Connection Helper Banner */}
       {pendingWire && (
@@ -521,18 +643,31 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
         {/* --- Draggable Modular Components --- */}
         {project.components.map((comp) => {
           const compWidth = comp.width || 240;
+          const rotation = comp.rotation || 0;
+          const scale = comp.scale || 1.0;
+          const isSelected = comp.id === selectedCompId;
 
           return (
             <div
               key={comp.id}
               style={{
-                transform: `translate(${comp.x}px, ${comp.y}px)`,
+                transform: `translate(${comp.x}px, ${comp.y}px) rotate(${rotation}deg) scale(${scale})`,
+                transformOrigin: 'center center',
                 width: `${compWidth}px`
               }}
-              className="absolute z-20 bg-slate-900/95 border border-slate-700/80 hover:border-slate-500 rounded-xl shadow-xl backdrop-blur p-3 cursor-move transition-shadow"
+              className={`absolute z-20 bg-slate-900/95 border ${
+                isSelected
+                  ? 'border-cyan-400 ring-2 ring-cyan-500/50 shadow-2xl shadow-cyan-950/80'
+                  : 'border-slate-700/80 hover:border-slate-500 shadow-xl'
+              } rounded-xl backdrop-blur p-3 cursor-move transition-shadow select-none`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedCompId(comp.id);
+              }}
               onMouseDown={(e) => {
                 if ((e.target as HTMLElement).tagName !== 'BUTTON' && !(e.target as HTMLElement).closest('[data-pin]')) {
                   const coords = getCanvasCoords(e);
+                  setSelectedCompId(comp.id);
                   setDraggingCompId(comp.id);
                   setDragOffset({ x: coords.x - comp.x, y: coords.y - comp.y });
                 }

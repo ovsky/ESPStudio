@@ -126,9 +126,24 @@ void app_main(void)
 }
 
 function generatePlatformIoConfig(project: DeviceProject): string {
+  let platform = 'espressif32';
   let boardId = 'esp32-s3-devkitc-1';
+
   if (project.mcu.family === 'ESP32-P4') boardId = 'esp32-p4-preview';
-  if (project.mcu.family === 'ESP32-C6') boardId = 'esp32-c6-devkitm-1';
+  else if (project.mcu.family === 'ESP32-C6') boardId = 'esp32-c6-devkitm-1';
+  else if (project.mcu.family === 'Arduino-Uno-R4') {
+    platform = 'renesas-ra';
+    boardId = 'uno_r4_wifi';
+  } else if (project.mcu.family === 'Arduino-Giga-R1') {
+    platform = 'ststm32';
+    boardId = 'giga_r1_m7';
+  } else if (project.mcu.family === 'Raspberry-Pi-Pico-2') {
+    platform = 'raspberrypi';
+    boardId = 'rp2350';
+  } else if (project.mcu.family.startsWith('Radxa')) {
+    platform = 'linux_arm64';
+    boardId = project.mcu.family === 'Radxa-Rock-5B' ? 'radxa_rock5b' : 'radxa_zero3w';
+  }
 
   return `; PlatformIO Project Configuration File
 ; Project: ${project.name}
@@ -138,9 +153,9 @@ function generatePlatformIoConfig(project: DeviceProject): string {
 default_envs = ${project.mcu.family.toLowerCase().replace(/[^a-z0-9]/g, '_')}
 
 [env:${project.mcu.family.toLowerCase().replace(/[^a-z0-9]/g, '_')}]
-platform = espressif32
+platform = ${platform}
 board = ${boardId}
-framework = arduino
+framework = ${platform === 'linux_arm64' ? 'custom' : 'arduino'}
 monitor_speed = 115200
 upload_speed = 921600
 

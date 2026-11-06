@@ -1,20 +1,25 @@
 import React, { useState, useMemo } from 'react';
 import { Header, ActiveTab } from './components/Header';
 import { SchematicCanvas } from './components/SchematicCanvas';
-import { Enclosure3DView } from './components/Enclosure3DView';
+import { RealDeviceViewer3D } from './components/3d/RealDeviceViewer3D';
 import { ElectricalInspector } from './components/ElectricalInspector';
-import { FirmwareModal } from './components/FirmwareModal';
+import { EnhancedCodeEditor } from './components/editor/EnhancedCodeEditor';
+import { VirtualRunnerModal } from './components/simulation/VirtualRunnerModal';
 import { BomModal } from './components/BomModal';
 import { ComponentPalette } from './components/ComponentPalette';
 import { MobileNav } from './components/MobileNav';
 import { PRESET_PROJECTS, MCU_BOARDS, MODULE_CATALOG } from './core/hardware-catalog';
 import { validateCircuit } from './core/pin-rules';
+import { generateFirmware } from './core/firmware-gen';
+import { createInitialHardwareState } from './core/esp-emulator';
 import {
   DeviceProject,
   DeviceEnclosureSpecs,
   WireConnection,
   ComponentModule,
-  McuFamily
+  McuFamily,
+  VirtualHardwareState,
+  SerialLogEntry
 } from './types/hardware';
 
 export default function App() {
@@ -33,6 +38,17 @@ export default function App() {
   // Component Palette Modal
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
 
+  // Live Firmware Code State
+  const [activeCode, setActiveCode] = useState<string>(() =>
+    generateFirmware(project, 'arduino')
+  );
+
+  // Virtual Hardware Execution State & Serial Logs
+  const [virtualState, setVirtualState] = useState<VirtualHardwareState>(() =>
+    createInitialHardwareState(project)
+  );
+  const [logs, setLogs] = useState<SerialLogEntry[]>([]);
+
   // Live DRC Circuit Validation
   const drcIssues = useMemo(() => validateCircuit(project), [project]);
   const issuesCount = useMemo(() => {
@@ -46,23 +62,30 @@ export default function App() {
   const handleLoadPreset = (presetId: string) => {
     const found = PRESET_PROJECTS.find((p) => p.id === presetId);
     if (found) {
-      setProject(JSON.parse(JSON.stringify(found)));
+      const cloned: DeviceProject = JSON.parse(JSON.stringify(found));
+      setProject(cloned);
+      setActiveCode(generateFirmware(cloned, 'arduino'));
+      setVirtualState(createInitialHardwareState(cloned));
+      setLogs([]);
     }
   };
 
   // Handler: Change SoC MCU Board
   const handleChangeMcu = (family: McuFamily) => {
     const targetBoard = MCU_BOARDS.find((b) => b.family === family) || MCU_BOARDS[0];
-    setProject((prev) => ({
-      ...prev,
-      mcu: targetBoard,
-      // Retain existing wires where possible
-      wires: prev.wires.filter(
-        (w) =>
-          targetBoard.pins.some((p) => p.id === w.fromPinId || p.id === w.toPinId) ||
-          (w.fromComponentId !== 'mcu' && w.toComponentId !== 'mcu')
-      )
-    }));
+    setProject((prev) => {
+      const updated: DeviceProject = {
+        ...prev,
+        mcu: targetBoard,
+        wires: prev.wires.filter(
+          (w) =>
+            targetBoard.pins.some((p) => p.id === w.fromPinId || p.id === w.toPinId) ||
+            (w.fromComponentId !== 'mcu' && w.toComponentId !== 'mcu')
+        )
+      };
+      setVirtualState(createInitialHardwareState(updated));
+      return updated;
+    });
   };
 
   // Handler: Update Component Position on Canvas
@@ -70,6 +93,19 @@ export default function App() {
     setProject((prev) => ({
       ...prev,
       components: prev.components.map((c) => (c.id === componentId ? { ...c, x, y } : c))
+    }));
+  };
+
+  // Handler: Update Component Transform (position, rotation, scale)
+  const handleUpdateComponentTransform = (
+    componentId: string,
+    transform: { x?: number; y?: number; rotation?: number; scale?: number }
+  ) => {
+    setProject((prev) => ({
+      ...prev,
+      components: prev.components.map((c) =>
+        c.id === componentId ? { ...c, ...transform } : c
+      )
     }));
   };
 
@@ -211,6 +247,7 @@ export default function App() {
           <SchematicCanvas
             project={project}
             onUpdateComponentPosition={handleUpdateComponentPosition}
+            onUpdateComponentTransform={handleUpdateComponentTransform}
             onAddWire={handleAddWire}
             onDeleteWire={handleDeleteWire}
             onRemoveComponent={handleRemoveComponent}
@@ -218,9 +255,12 @@ export default function App() {
         )}
 
         {activeTab === 'enclosure' && (
-          <Enclosure3DView
+          <RealDeviceViewer3D
             project={project}
             onUpdateEnclosure={handleUpdateEnclosure}
+            virtualState={virtualState}
+            onUpdateVirtualState={setVirtualState}
+            onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
           />
         )}
 
@@ -233,7 +273,26 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'firmware' && <FirmwareModal project={project} />}
+        {activeTab === 'firmware' && (
+          <EnhancedCodeEditor
+            project={project}
+            code={activeCode}
+            onChangeCode={setActiveCode}
+            onRunCode={() => setActiveTab('emulator')}
+          />
+        )}
+
+        {activeTab === 'emulator' && (
+          <VirtualRunnerModal
+            project={project}
+            activeCode={activeCode}
+            virtualState={virtualState}
+            onUpdateVirtualState={setVirtualState}
+            logs={logs}
+            onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
+            onClearLogs={() => setLogs([])}
+          />
+        )}
 
         {activeTab === 'bom' && <BomModal project={project} />}
       </main>

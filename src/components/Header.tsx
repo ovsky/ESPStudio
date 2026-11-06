@@ -1,9 +1,9 @@
 import React from 'react';
-import { Cpu, Box, Zap, Code, FileSpreadsheet, Plus, Download, RefreshCw, Smartphone, GitBranch } from 'lucide-react';
+import { Cpu, Box, Zap, Code, FileSpreadsheet, Plus, Download, RefreshCw, Smartphone, GitBranch, Terminal, Play } from 'lucide-react';
 import { PRESET_PROJECTS, MCU_BOARDS } from '../core/hardware-catalog';
 import { DeviceProject, McuFamily } from '../types/hardware';
 
-export type ActiveTab = 'canvas' | 'enclosure' | 'rules' | 'firmware' | 'bom';
+export type ActiveTab = 'canvas' | 'enclosure' | 'rules' | 'firmware' | 'emulator' | 'bom';
 
 interface HeaderProps {
   project: DeviceProject;
@@ -74,11 +74,11 @@ export const Header: React.FC<HeaderProps> = ({
               aria-label="Select microcontroller board"
               value={project.mcu.family}
               onChange={(e) => onChangeMcu(e.target.value as McuFamily)}
-              className="bg-slate-900 border border-slate-700 text-cyan-300 text-xs font-mono rounded px-1.5 py-1 outline-none focus:border-cyan-500 cursor-pointer max-w-[105px] sm:max-w-none truncate"
+              className="bg-slate-900 border border-slate-700 text-cyan-300 text-xs font-mono rounded px-1.5 py-1 outline-none focus:border-cyan-500 cursor-pointer max-w-[130px] sm:max-w-none truncate"
             >
               {MCU_BOARDS.map((m) => (
                 <option key={m.id} value={m.family}>
-                  {m.family}
+                  {m.name}
                 </option>
               ))}
             </select>
@@ -89,7 +89,7 @@ export const Header: React.FC<HeaderProps> = ({
         <nav className="hidden lg:flex items-center bg-slate-950/70 p-1 rounded-lg border border-slate-800 text-xs font-medium">
           <button
             onClick={() => onTabChange('canvas')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
               activeTab === 'canvas'
                 ? 'bg-cyan-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -101,19 +101,19 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             onClick={() => onTabChange('enclosure')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
               activeTab === 'enclosure'
                 ? 'bg-cyan-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
             }`}
           >
             <Box className="w-3.5 h-3.5" />
-            <span>3D Enclosure</span>
+            <span>3D Real Device</span>
           </button>
 
           <button
             onClick={() => onTabChange('rules')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all relative ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer relative ${
               activeTab === 'rules'
                 ? 'bg-cyan-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -130,7 +130,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           <button
             onClick={() => onTabChange('firmware')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
               activeTab === 'firmware'
                 ? 'bg-cyan-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -141,8 +141,20 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           <button
+            onClick={() => onTabChange('emulator')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+              activeTab === 'emulator'
+                ? 'bg-cyan-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Terminal className="w-3.5 h-3.5 text-amber-400" />
+            <span>Virtual Runner</span>
+          </button>
+
+          <button
             onClick={() => onTabChange('bom')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
               activeTab === 'bom'
                 ? 'bg-cyan-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -155,6 +167,15 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => onTabChange('emulator')}
+            className="flex items-center gap-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition-all cursor-pointer"
+            title="Run code in ESP32 emulator and serial monitor"
+          >
+            <Play className="w-3 h-3 fill-current" />
+            <span className="hidden sm:inline">Run Device</span>
+          </button>
+
           <button
             onClick={onOpenAddModule}
             className="flex items-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-md transition-all cursor-pointer"

@@ -163,18 +163,28 @@ export function validateCircuit(project: DeviceProject): PinConflictRuleIssue[] 
     }
 
     // Voltage safety: 5V power connected to 3.3V GPIO
-    if (
-      (fromSignal.includes('POWER_5V') && toSignal.includes('GPIO')) ||
-      (toSignal.includes('POWER_5V') && fromSignal.includes('GPIO'))
-    ) {
+    let fromPinObj: PinDefinition | undefined;
+    let toPinObj: PinDefinition | undefined;
+    if (wire.fromComponentId === 'mcu') fromPinObj = mcuPinMap.get(wire.fromPinId);
+    else fromPinObj = compPinMap.get(`${wire.fromComponentId}:${wire.fromPinId}`)?.pin;
+
+    if (wire.toComponentId === 'mcu') toPinObj = mcuPinMap.get(wire.toPinId);
+    else toPinObj = compPinMap.get(`${wire.toComponentId}:${wire.toPinId}`)?.pin;
+
+    const has5vRail = fromSignal.includes('POWER_5V') || toSignal.includes('POWER_5V');
+    const targetIs3v3Gpio =
+      (fromSignal.includes('GPIO') && fromPinObj?.voltageDomain === '3.3V') ||
+      (toSignal.includes('GPIO') && toPinObj?.voltageDomain === '3.3V');
+
+    if (has5vRail && targetIs3v3Gpio) {
       issues.push({
         severity: 'error',
         code: 'OVERVOLTAGE_HAZARD',
         title: '5V Connected to 3.3V GPIO Pin',
-        description: `A 5V power rail is shorted directly to a GPIO pin. ESP32 GPIOs are NOT 5V-tolerant and will suffer permanent dielectric breakdown.`,
+        description: `A 5V power rail is shorted directly to a 3.3V GPIO pin. 3.3V logic devices will suffer permanent dielectric breakdown.`,
         involvedPinIds: [wire.fromPinId, wire.toPinId],
         involvedComponentIds: [wire.fromComponentId, wire.toComponentId],
-        recommendation: 'Never wire 5V directly to GPIOs. Use a resistor voltage divider or logic level shifter (e.g. TXS0108E).'
+        recommendation: 'Never wire 5V directly to 3.3V GPIOs. Use a resistor voltage divider or logic level shifter (e.g. TXS0108E).'
       });
     }
   }

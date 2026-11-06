@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Box, Zap, Code, FileSpreadsheet } from 'lucide-react';
+import { Cpu, Box, Zap, Code, FileSpreadsheet, Terminal } from 'lucide-react';
 import { ActiveTab } from './Header';
 
 interface MobileNavProps {
@@ -22,9 +22,10 @@ export const MobileNav: React.FC<MobileNavProps> = ({
 }) => {
   const tabs: MobileTabItem[] = [
     { id: 'canvas', label: 'Schematic', icon: Cpu },
-    { id: 'enclosure', label: '3D Case', icon: Box },
+    { id: 'enclosure', label: '3D Device', icon: Box },
     { id: 'rules', label: 'DRC', icon: Zap, badge: issuesCount.errors > 0 ? 'error' : issuesCount.warnings > 0 ? 'warning' : null },
     { id: 'firmware', label: 'Firmware', icon: Code },
+    { id: 'emulator', label: 'Runner', icon: Terminal },
     { id: 'bom', label: 'BOM', icon: FileSpreadsheet }
   ];
 
