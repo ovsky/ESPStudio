@@ -227,6 +227,158 @@ export function createBatteryLabelTexture(capacityMah: number): THREE.CanvasText
   return texture;
 }
 
+/**
+ * Procedural studio HDRI used for physically based reflections.
+ * Painted as an equirectangular panorama: dark studio shell, cool ceiling
+ * strip lights and two warm/cool softboxes that read beautifully on
+ * anodized aluminium and glass.
+ */
+export function createStudioEnvironmentTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  // Deep studio gradient sky to floor
+  const sky = ctx.createLinearGradient(0, 0, 0, 512);
+  sky.addColorStop(0, '#101a30');
+  sky.addColorStop(0.42, '#070c18');
+  sky.addColorStop(0.55, '#04070f');
+  sky.addColorStop(1, '#010204');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, 1024, 512);
+
+  // Horizon glow
+  const horizon = ctx.createLinearGradient(0, 210, 0, 330);
+  horizon.addColorStop(0, 'rgba(34, 211, 238, 0)');
+  horizon.addColorStop(0.5, 'rgba(34, 211, 238, 0.16)');
+  horizon.addColorStop(1, 'rgba(34, 211, 238, 0)');
+  ctx.fillStyle = horizon;
+  ctx.fillRect(0, 200, 1024, 140);
+
+  // Softbox 1 - huge cool key light
+  const key = ctx.createRadialGradient(260, 150, 10, 260, 150, 190);
+  key.addColorStop(0, 'rgba(235, 250, 255, 1)');
+  key.addColorStop(0.25, 'rgba(186, 230, 253, 0.85)');
+  key.addColorStop(0.65, 'rgba(56, 189, 248, 0.18)');
+  key.addColorStop(1, 'rgba(56, 189, 248, 0)');
+  ctx.fillStyle = key;
+  ctx.fillRect(70, 0, 380, 340);
+
+  // Softbox 2 - warm rim
+  const rim = ctx.createRadialGradient(780, 170, 8, 780, 170, 170);
+  rim.addColorStop(0, 'rgba(255, 246, 230, 0.95)');
+  rim.addColorStop(0.35, 'rgba(251, 191, 36, 0.35)');
+  rim.addColorStop(1, 'rgba(251, 146, 60, 0)');
+  ctx.fillStyle = rim;
+  ctx.fillRect(610, 0, 340, 340);
+
+  // Thin overhead strip lights
+  [
+    { x: 380, w: 270, color: 'rgba(165, 243, 252, 0.9)' },
+    { x: 700, w: 160, color: 'rgba(196, 181, 253, 0.65)' }
+  ].forEach(({ x, w, color }) => {
+    const grad = ctx.createLinearGradient(x, 20, x + w, 20);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, color);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, 16, w, 10);
+  });
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Dark reflective studio floor with cyan precision-CAD grid. */
+export function createStudioFloorTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 1024;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#02040a';
+  ctx.fillRect(0, 0, 1024, 1024);
+
+  // Center light pool
+  const pool = ctx.createRadialGradient(512, 512, 20, 512, 512, 540);
+  pool.addColorStop(0, 'rgba(20, 58, 82, 0.55)');
+  pool.addColorStop(0.35, 'rgba(8, 24, 42, 0.35)');
+  pool.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = pool;
+  ctx.fillRect(0, 0, 1024, 1024);
+
+  // Fine grid
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.16)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 1024; i += 32) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 1024);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(1024, i);
+    ctx.stroke();
+  }
+
+  // Major grid
+  ctx.strokeStyle = 'rgba(34, 211, 238, 0.3)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= 1024; i += 256) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 1024);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(1024, i);
+    ctx.stroke();
+  }
+
+  // Concentric CAD measurement rings
+  ctx.strokeStyle = 'rgba(34, 211, 238, 0.22)';
+  ctx.lineWidth = 2;
+  [150, 300, 450].forEach((r) => {
+    ctx.beginPath();
+    ctx.arc(512, 512, r, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+
+  // Crisp crosshair
+  ctx.strokeStyle = 'rgba(125, 211, 252, 0.38)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(512, 40);
+  ctx.lineTo(512, 984);
+  ctx.moveTo(40, 512);
+  ctx.lineTo(984, 512);
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+  return texture;
+}
+
+/** Soft radial alpha mask for a grounded contact shadow. */
+export function createContactShadowTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createRadialGradient(128, 128, 8, 128, 128, 126);
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0.9)');
+  grad.addColorStop(0.45, 'rgba(0, 0, 0, 0.45)');
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(canvas);
+}
+
 export function createKeypadTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 512;

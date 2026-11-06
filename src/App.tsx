@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { Sparkles } from 'lucide-react';
 import { Header, ActiveTab } from './components/Header';
 import { SchematicCanvas } from './components/SchematicCanvas';
 import { RealDeviceViewer3D } from './components/3d/RealDeviceViewer3D';
@@ -34,6 +35,9 @@ export default function App() {
 
   // Active View Tab
   const [activeTab, setActiveTab] = useState<ActiveTab>('canvas');
+
+  // Focus mode: hide header, navigation and non-essential overlays
+  const [isUiHidden, setIsUiHidden] = useState(false);
 
   // Component Palette Modal
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
@@ -229,23 +233,31 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[#070b12] text-slate-100 overflow-hidden font-sans">
       {/* Top Header */}
-      <Header
-        project={project}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onLoadPreset={handleLoadPreset}
-        onChangeMcu={handleChangeMcu}
-        onOpenAddModule={() => setIsPaletteOpen(true)}
-        onExportJson={handleExportJson}
-        onResetProject={handleResetProject}
-        issuesCount={issuesCount}
-      />
+      {!isUiHidden && (
+        <Header
+          project={project}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onLoadPreset={handleLoadPreset}
+          onChangeMcu={handleChangeMcu}
+          onOpenAddModule={() => setIsPaletteOpen(true)}
+          onExportJson={handleExportJson}
+          onResetProject={handleResetProject}
+          onToggleUi={() => setIsUiHidden(true)}
+          issuesCount={issuesCount}
+        />
+      )}
 
       {/* Main View Area */}
-      <main className="flex-1 relative overflow-hidden pb-14 lg:pb-0">
+      <main
+        className={`flex-1 relative overflow-hidden transition-[padding] duration-300 ${
+          isUiHidden ? 'pb-0' : 'pb-14 lg:pb-0'
+        }`}
+      >
         {activeTab === 'canvas' && (
           <SchematicCanvas
             project={project}
+            uiHidden={isUiHidden}
             onUpdateComponentPosition={handleUpdateComponentPosition}
             onUpdateComponentTransform={handleUpdateComponentTransform}
             onAddWire={handleAddWire}
@@ -261,6 +273,8 @@ export default function App() {
             virtualState={virtualState}
             onUpdateVirtualState={setVirtualState}
             onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
+            uiHidden={isUiHidden}
+            onToggleUi={() => setIsUiHidden(true)}
           />
         )}
 
@@ -298,11 +312,26 @@ export default function App() {
       </main>
 
       {/* Mobile Bottom Navigation Bar */}
-      <MobileNav
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        issuesCount={issuesCount}
-      />
+      {!isUiHidden && (
+        <MobileNav
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          issuesCount={issuesCount}
+        />
+      )}
+
+      {/* Focus-mode restore affordance */}
+      {isUiHidden && (
+        <button
+          onClick={() => setIsUiHidden(false)}
+          className="fixed top-3 right-3 z-[70] flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-xl border border-cyan-500/50 text-cyan-300 hover:text-white text-xs font-bold px-3 py-2 rounded-xl shadow-2xl shadow-cyan-950/50 cursor-pointer"
+          title="Show header and navigation"
+          aria-label="Show UI chrome"
+        >
+          <Sparkles className="w-4 h-4" />
+          Show UI
+        </button>
+      )}
 
       {/* Hardware Component Palette Modal */}
       <ComponentPalette

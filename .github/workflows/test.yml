@@ -7,6 +7,13 @@ on:
     branches: [ "main", "develop" ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   run-tests:
     name: Unit Tests & Logic Validation
@@ -29,6 +36,3 @@ jobs:
 
       - name: Run Hardware Core Logic Unit Tests
         run: npm test
-
-      - name: Run Circuit & Power Rule Verification
-        run: npx --yes tsx --test src/core/*.test.ts

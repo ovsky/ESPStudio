@@ -131,6 +131,10 @@ function generatePlatformIoConfig(project: DeviceProject): string {
 
   if (project.mcu.family === 'ESP32-P4') boardId = 'esp32-p4-preview';
   else if (project.mcu.family === 'ESP32-C6') boardId = 'esp32-c6-devkitm-1';
+  else if (project.mcu.family === 'ESP32-C5') boardId = 'esp32-c5-devkitc-1';
+  else if (project.mcu.family === 'ESP32-C3') boardId = 'esp32-c3-devkitm-1';
+  else if (project.mcu.family === 'ESP32-S2') boardId = 'esp32-s2-saola-1';
+  else if (project.mcu.family === 'ESP32-Classic') boardId = 'esp32doit-devkit-v1';
   else if (project.mcu.family === 'Arduino-Uno-R4') {
     platform = 'renesas-ra';
     boardId = 'uno_r4_wifi';

@@ -353,9 +353,27 @@ export function createMcuBoardMesh(mcu: McuBoardSpec): THREE.Group {
 }
 
 /**
+ * Returns physical panel dimensions for any catalog display module.
+ * Shared by the 3D builder and the enclosure faceplate cut-out generator.
+ */
+export function getDisplayDimensions(comp: ComponentModule): {
+  width: number;
+  length: number;
+  height: number;
+} {
+  const is7in = comp.typeId.includes('7in');
+  const isOled = comp.typeId.includes('oled');
+  return {
+    width: is7in ? 9.5 : isOled ? 3.0 : 5.8,
+    length: is7in ? 6.2 : isOled ? 3.2 : 8.6,
+    height: 0.35
+  };
+}
+
+/**
  * Creates 3D model of Display Module:
- * - Ultra-thin TFT / IPS Glass panel with active UI texture
- * - Metallic bezel and aluminum backplate
+ * - Ultra-thin TFT / IPS glass panel with active UI texture
+ * - Metallic bezel, polished glass reflection layer and cyan frame glow
  * - Flexible FPC ribbon cable tail
  * - Interactive touchscreen raycast surface
  */
@@ -366,38 +384,79 @@ export function createDisplayMesh(
   const group = new THREE.Group();
   group.name = `DISPLAY_${comp.id}`;
 
-  const is7in = comp.typeId.includes('7in');
-  const isOled = comp.typeId.includes('oled');
-  const width = is7in ? 9.5 : isOled ? 3.0 : 5.8;
-  const length = is7in ? 6.2 : isOled ? 3.2 : 8.6;
-  const height = 0.35;
+  const { width, length, height } = getDisplayDimensions(comp);
 
   // 1. Back Bezel Housing
   const bezelGeo = new THREE.BoxGeometry(width, height, length);
-  const bezelMat = new THREE.MeshStandardMaterial({
-    color: 0x18181b,
-    metalness: 0.8,
-    roughness: 0.3
+  const bezelMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0f1115,
+    metalness: 0.85,
+    roughness: 0.22,
+    clearcoat: 0.8,
+    clearcoatRoughness: 0.15
   });
   const bezelMesh = new THREE.Mesh(bezelGeo, bezelMat);
+  bezelMesh.castShadow = true;
   group.add(bezelMesh);
 
   // 2. Active Screen Glass Surface (Interactive Touch Target)
   const screenGeo = new THREE.PlaneGeometry(width * 0.9, length * 0.88);
-  const screenMat = new THREE.MeshStandardMaterial({
+  const screenTexture = dynamicTexture || createDisplayScreenTexture(comp.name);
+  const screenMat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    roughness: 0.08,
-    metalness: 0.05,
+    roughness: 0.16,
+    metalness: 0.0,
     emissive: 0xffffff,
-    emissiveIntensity: 0.2,
-    map: dynamicTexture || createDisplayScreenTexture(comp.name)
+    emissiveIntensity: 1.15,
+    map: screenTexture,
+    emissiveMap: screenTexture,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.06,
+    envMapIntensity: 1.6
   });
   const screenMesh = new THREE.Mesh(screenGeo, screenMat);
   screenMesh.name = 'TOUCH_DISPLAY_SCREEN';
   screenMesh.userData = { componentId: comp.id, isInteractiveScreen: true };
   screenMesh.rotation.x = -Math.PI / 2;
-  screenMesh.position.set(0, height / 2 + 0.01, 0);
+  screenMesh.position.set(0, height / 2 + 0.012, 0);
   group.add(screenMesh);
+
+  // Polished cover glass with a faint reflective sheen in front of the pixels
+  const coverMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    metalness: 0,
+    roughness: 0.03,
+    clearcoat: 1,
+    clearcoatRoughness: 0.02,
+    transparent: true,
+    opacity: 0.08,
+    depthWrite: false,
+    envMapIntensity: 2.2
+  });
+  const coverGlass = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.9, length * 0.88), coverMat);
+  coverGlass.rotation.x = -Math.PI / 2;
+  coverGlass.position.set(0, height / 2 + 0.03, 0);
+  coverGlass.renderOrder = 3;
+  group.add(coverGlass);
+
+  // Thin emissive accent outline around the active area
+  const outlinePoints = [
+    new THREE.Vector3(-width * 0.45, height / 2 + 0.025, -length * 0.44),
+    new THREE.Vector3(width * 0.45, height / 2 + 0.025, -length * 0.44),
+    new THREE.Vector3(width * 0.45, height / 2 + 0.025, length * 0.44),
+    new THREE.Vector3(-width * 0.45, height / 2 + 0.025, length * 0.44)
+  ];
+  const outlineGeo = new THREE.BufferGeometry().setFromPoints(outlinePoints);
+  const outline = new THREE.LineLoop(
+    outlineGeo,
+    new THREE.LineBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  group.add(outline);
 
   // 3. FPC Ribbon Cable
   const fpcGeo = new THREE.BoxGeometry(1.4, 0.04, 1.8);
@@ -715,21 +774,25 @@ export function create3dWireMesh(
   return wireMesh;
 }
 
-/**
- * Creates 3D Enclosure Shell:
- * - Sleek mechanical casing with beveled walls
- * - USB-C, SIM card and power cutouts
- * - Standoff screw bosses
- */
+export interface EnclosureDisplayCutout {
+  width: number;
+  length: number;
+  centerZ: number;
+}
+
 /**
  * Creates 3D Enclosure Shell with split Top Bezel & Bottom Chassis:
- * - ENCLOSURE_TOP: CNC faceplate bezel with display cutout window, chamfered edge, and corner screw counter-bores
- * - ENCLOSURE_BOTTOM: Rigid chassis tray with bottom floor, side perimeter walls, USB cutouts, and brass standoff posts
- * Allows true mechanical exploded view animation where top bezel lifts off upward and chassis lowers downward.
+ * - ENCLOSURE_TOP: CNC faceplate with a real display cut-out window,
+ *   chamfered optical bezel, camera punch-hole and speaker slit
+ * - ENCLOSURE_BOTTOM: machined chassis tray with perimeter walls,
+ *   port cut-outs and brass stand-off posts
+ * Allows true mechanical exploded view animation where the faceplate
+ * lifts toward the viewer and the chassis drops behind the board stack.
  */
 export function createEnclosure3dMesh(
   enc: DeviceEnclosureSpecs,
-  opacity: number = 0.85
+  opacity: number = 0.85,
+  cutout?: EnclosureDisplayCutout
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = 'ENCLOSURE_SHELL';
@@ -740,69 +803,123 @@ export function createEnclosure3dMesh(
   const wall = (enc.wallThicknessMm || 2.0) / 10.0;
 
   // Material properties
-  let roughness = 0.3;
-  let metalness = 0.85;
+  let roughness = 0.24;
+  let metalness = 0.9;
 
   if (enc.material === '3D-Printed PETG') {
-    roughness = 0.6;
+    roughness = 0.55;
     metalness = 0.05;
   } else if (enc.material === 'CNC Polycarbonate') {
-    roughness = 0.15;
-    metalness = 0.1;
+    roughness = 0.12;
+    metalness = 0.08;
   }
 
   const caseMat = new THREE.MeshPhysicalMaterial({
     color: new THREE.Color(enc.colorHex),
     roughness,
     metalness,
-    transmission: enc.material === 'CNC Polycarbonate' ? 0.75 : 0,
-    transparent: opacity < 1.0,
+    transparent: opacity < 0.999,
     opacity,
-    clearcoat: 0.8,
-    clearcoatRoughness: 0.15
+    clearcoat: enc.material === 'CNC Polycarbonate' ? 1.0 : 0.72,
+    clearcoatRoughness: enc.material === 'CNC Polycarbonate' ? 0.04 : 0.16,
+    envMapIntensity: 1.35,
+    side: THREE.DoubleSide,
+    depthWrite: opacity > 0.92
   });
+  caseMat.userData.isShellMaterial = true;
 
   // ==========================================
-  // 1. TOP BEZEL / FACEPLATE (ENCLOSURE_TOP)
+  // 1. TOP FACEPLATE / OPTICAL BEZEL (ENCLOSURE_TOP)
   // ==========================================
   const topGroup = new THREE.Group();
   topGroup.name = 'ENCLOSURE_TOP';
   topGroup.position.set(0, depth / 2 - wall / 2, 0);
 
-  // Top Faceplate Outer Frame
-  const topThickness = wall * 1.2;
-  // Create outer border segments around display/keyboard
-  const topBorderLeft = new THREE.Mesh(
-    new THREE.BoxGeometry(wall * 1.4, topThickness, length),
-    caseMat
-  );
-  topBorderLeft.position.set(-width / 2 + wall * 0.7, 0, 0);
-  topBorderLeft.castShadow = true;
-  topGroup.add(topBorderLeft);
+  const topThickness = Math.max(wall * 1.2, 0.16);
+  const halfW = width / 2;
+  const halfL = length / 2;
 
-  const topBorderRight = new THREE.Mesh(
-    new THREE.BoxGeometry(wall * 1.4, topThickness, length),
-    caseMat
-  );
-  topBorderRight.position.set(width / 2 - wall * 0.7, 0, 0);
-  topBorderRight.castShadow = true;
-  topGroup.add(topBorderRight);
+  // Build the faceplate as a real extruded solid with a display window hole.
+  const faceShape = new THREE.Shape();
+  faceShape.moveTo(-halfW + 0.02, -halfL + 0.02);
+  faceShape.lineTo(halfW - 0.02, -halfL + 0.02);
+  faceShape.lineTo(halfW - 0.02, halfL - 0.02);
+  faceShape.lineTo(-halfW + 0.02, halfL - 0.02);
+  faceShape.closePath();
 
-  const topBorderTop = new THREE.Mesh(
-    new THREE.BoxGeometry(width - wall * 2.8, topThickness, wall * 1.6),
-    caseMat
-  );
-  topBorderTop.position.set(0, 0, -length / 2 + wall * 0.8);
-  topBorderTop.castShadow = true;
-  topGroup.add(topBorderTop);
+  if (cutout) {
+    const margin = wall * 1.6;
+    const cutW = Math.min(cutout.width, width - margin * 2);
+    const cutL = Math.min(cutout.length, length - margin * 2);
+    const cutZ = Math.min(
+      halfL - cutL / 2 - margin,
+      Math.max(-halfL + cutL / 2 + margin, cutout.centerZ)
+    );
+    const hole = new THREE.Path();
+    hole.moveTo(-cutW / 2, cutZ - cutL / 2);
+    hole.lineTo(-cutW / 2, cutZ + cutL / 2);
+    hole.lineTo(cutW / 2, cutZ + cutL / 2);
+    hole.lineTo(cutW / 2, cutZ - cutL / 2);
+    hole.closePath();
+    faceShape.holes.push(hole);
 
-  const topBorderBottom = new THREE.Mesh(
-    new THREE.BoxGeometry(width - wall * 2.8, topThickness, wall * 1.6),
-    caseMat
-  );
-  topBorderBottom.position.set(0, 0, length / 2 - wall * 0.8);
-  topBorderBottom.castShadow = true;
-  topGroup.add(topBorderBottom);
+    // Recessed black gasket just below the cut glass
+    const gasket = new THREE.Mesh(
+      new THREE.BoxGeometry(cutW + 0.12, 0.035, cutL + 0.12),
+      new THREE.MeshStandardMaterial({
+        color: 0x030407,
+        roughness: 0.8,
+        metalness: 0.1
+      })
+    );
+    gasket.position.set(0, -topThickness / 2 + 0.01, cutZ);
+    topGroup.add(gasket);
+  }
+
+  const faceGeo = new THREE.ExtrudeGeometry(faceShape, {
+    depth: topThickness,
+    bevelEnabled: true,
+    bevelSegments: 2,
+    bevelSize: 0.035,
+    bevelThickness: 0.025,
+    curveSegments: 4
+  });
+  faceGeo.rotateX(Math.PI / 2);
+  const facePlate = new THREE.Mesh(faceGeo, caseMat);
+  facePlate.position.y = topThickness / 2;
+  facePlate.castShadow = true;
+  facePlate.receiveShadow = true;
+  topGroup.add(facePlate);
+
+  // Speaker slit + camera punch-hole above the display
+  if (cutout) {
+    const speaker = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.22, 0.035, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x020305, roughness: 0.55, metalness: 0.4 })
+    );
+    speaker.position.set(0, topThickness / 2 + 0.015, -halfL + wall * 2.2);
+    topGroup.add(speaker);
+
+    const cameraRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.145, 0.025, 10, 28),
+      silverMetalMat
+    );
+    cameraRing.rotation.x = Math.PI / 2;
+    cameraRing.position.set(0, topThickness / 2 + 0.018, -halfL + wall * 3.35);
+    topGroup.add(cameraRing);
+
+    const cameraLens = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 0.035, 20),
+      new THREE.MeshPhysicalMaterial({
+        color: 0x020617,
+        metalness: 0.4,
+        roughness: 0.08,
+        clearcoat: 1
+      })
+    );
+    cameraLens.position.set(0, topThickness / 2 + 0.015, -halfL + wall * 3.35);
+    topGroup.add(cameraLens);
+  }
 
   // 4 Corner Screws on Top Bezel (M2.5 Torx / Allen)
   [
@@ -813,14 +930,14 @@ export function createEnclosure3dMesh(
   ].forEach(([x, z]) => {
     const screwCapGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.12, 16);
     const screwCap = new THREE.Mesh(screwCapGeo, silverMetalMat);
-    screwCap.position.set(x, topThickness / 2 + 0.02, z);
+    screwCap.position.set(x, topThickness / 2 + 0.09, z);
     topGroup.add(screwCap);
 
     // Dark torx hex socket indent
     const socketGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.05, 6);
     const socketMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
     const socket = new THREE.Mesh(socketGeo, socketMat);
-    socket.position.set(x, topThickness / 2 + 0.06, z);
+    socket.position.set(x, topThickness / 2 + 0.13, z);
     topGroup.add(socket);
   });
 
@@ -858,12 +975,12 @@ export function createEnclosure3dMesh(
   });
 
   // 4 Corner Brass Standoff Posts inside bottom chassis
-  const standoffHeight = depth * 0.7;
+  const standoffHeight = depth * 0.66;
   const standoffGeo = new THREE.CylinderGeometry(0.18, 0.18, standoffHeight, 16);
   const standoffMat = new THREE.MeshStandardMaterial({
     color: 0xca8a04, // Polished Brass Standoffs
-    metalness: 0.9,
-    roughness: 0.25
+    metalness: 0.92,
+    roughness: 0.22
   });
 
   [
@@ -877,12 +994,44 @@ export function createEnclosure3dMesh(
     bottomGroup.add(post);
   });
 
-  // USB-C Cutout slot on side wall
-  const portBezelGeo = new THREE.BoxGeometry(wall * 1.2, 0.38, 0.9);
-  const portBezelMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6 });
+  // USB-C port cut-out / connector cage on the side wall
+  const portBezelGeo = new THREE.BoxGeometry(wall * 1.15, 0.34, 0.82);
+  const portBezelMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0b1220,
+    roughness: 0.35,
+    metalness: 0.75,
+    clearcoat: 0.5
+  });
   const portBezel = new THREE.Mesh(portBezelGeo, portBezelMat);
   portBezel.position.set(-width / 2 + wall / 2, 0.5, 0);
   bottomGroup.add(portBezel);
+
+  const portCavity = new THREE.Mesh(
+    new THREE.BoxGeometry(wall * 1.3, 0.18, 0.56),
+    new THREE.MeshBasicMaterial({ color: 0x02040a })
+  );
+  portCavity.position.set(-width / 2 + wall * 0.52, 0.5, 0);
+  bottomGroup.add(portCavity);
+
+  // Side power / volume key on the opposite edge
+  const powerKey = new THREE.Mesh(
+    new THREE.BoxGeometry(wall * 0.7, 0.55, 0.14),
+    silverMetalMat
+  );
+  powerKey.position.set(width / 2 - wall * 0.25, 0.34, -length * 0.18);
+  bottomGroup.add(powerKey);
+
+  // Subtle inner copper RF shield liner for the exploded view
+  const liner = new THREE.Mesh(
+    new THREE.BoxGeometry(width - wall * 2.4, 0.028, length - wall * 2.4),
+    new THREE.MeshStandardMaterial({
+      color: 0x7c4a16,
+      metalness: 0.85,
+      roughness: 0.34
+    })
+  );
+  liner.position.set(0, wall * 0.62, 0);
+  bottomGroup.add(liner);
 
   group.add(bottomGroup);
 

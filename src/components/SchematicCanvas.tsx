@@ -14,7 +14,8 @@ import {
   Sparkles,
   RotateCw,
   Grid,
-  Move
+  Move,
+  Maximize2
 } from 'lucide-react';
 import {
   DeviceProject,
@@ -27,6 +28,7 @@ import {
 
 interface SchematicCanvasProps {
   project: DeviceProject;
+  uiHidden?: boolean;
   onUpdateComponentPosition: (componentId: string, x: number, y: number) => void;
   onUpdateComponentTransform?: (
     componentId: string,
@@ -47,6 +49,7 @@ interface PendingWireConnection {
 
 export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   project,
+  uiHidden = false,
   onUpdateComponentPosition,
   onUpdateComponentTransform,
   onAddWire,
@@ -55,11 +58,12 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Pan & Zoom
-  const [zoom, setZoom] = useState(1.0);
-  const [pan, setPan] = useState({ x: 40, y: 30 });
+  // Pan & Zoom (state mirrors refs so pointer gestures never read stale values)
+  const [zoom, setZoomState] = useState(1.0);
+  const [pan, setPanState] = useState({ x: 40, y: 30 });
+  const zoomRef = useRef(1.0);
+  const panRef = useRef({ x: 40, y: 30 });
   const [isPanning, setIsPanning] = useState(false);
-  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
 
   // Grid Snapping
   const [snapToGrid, setSnapToGrid] = useState(false);
@@ -67,9 +71,35 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   // Selected Component & Transformation
   const [selectedCompId, setSelectedCompId] = useState<string | null>(null);
 
-  // Dragging Component
+  // Drag / gesture state
   const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const gestureRef = useRef<
+    | {
+        mode: 'pan';
+        startClient: { x: number; y: number };
+        startPan: { x: number; y: number };
+      }
+    | {
+        mode: 'drag' | 'drag-mcu';
+        compId?: string;
+        offset: { x: number; y: number };
+      }
+    | {
+        mode: 'pinch';
+        startDist: number;
+        startZoom: number;
+        anchorWorld: { x: number; y: number };
+      }
+    | {
+        mode: 'scale';
+        compId: string;
+        centerWorld: { x: number; y: number };
+        startDist: number;
+        startScale: number;
+      }
+    | null
+  >(null);
 
   // Wire Connection Mode
   const [pendingWire, setPendingWire] = useState<PendingWireConnection | null>(null);
@@ -86,8 +116,10 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     y: number;
   } | null>(null);
 
-  // Fixed MCU board position on canvas
-  const mcuPos = { x: 70, y: 60 };
+  // MCU board position is now fully draggable on the canvas
+  const [mcuPos, setMcuPos] = useState({ x: 70, y: 60 });
+  const mcuPosRef = useRef(mcuPos);
+  mcuPosRef.current = mcuPos;
 
   // Calculate pin world coordinates with rotation & scaling support
   const getPinCoordinate = (componentId: string, pinId: string): { x: number; y: number } => {
@@ -131,52 +163,253 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     return { x, y };
   };
 
-  // Convert mouse event to canvas world coordinates
-  const getCanvasCoords = (e: React.MouseEvent | MouseEvent) => {
-    if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    return {
-      x: (e.clientX - rect.left - pan.x) / zoom,
-      y: (e.clientY - rect.top - pan.y) / zoom
-    };
+  const clampZoom = (value: number) => Math.min(2.5, Math.max(0.3, value));
+
+  const applyView = (nextZoom: number, nextPan: { x: number; y: number }) => {
+    zoomRef.current = nextZoom;
+    panRef.current = nextPan;
+    setZoomState(nextZoom);
+    setPanState(nextPan);
   };
 
-  // Mouse Move handling
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const coords = getCanvasCoords(e);
-    setMousePos(coords);
+  const getLocalPoint = (clientX: number, clientY: number) => {
+    const el = containerRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const rect = el.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  };
 
-    if (isPanning) {
-      setPan({
-        x: e.clientX - startPan.x,
-        y: e.clientY - startPan.y
+  const localToWorld = (local: { x: number; y: number }) => ({
+    x: (local.x - panRef.current.x) / zoomRef.current,
+    y: (local.y - panRef.current.y) / zoomRef.current
+  });
+
+  const zoomAtPoint = (local: { x: number; y: number }, requestedZoom: number) => {
+    const nextZoom = clampZoom(requestedZoom);
+    const world = localToWorld(local);
+    applyView(nextZoom, {
+      x: local.x - world.x * nextZoom,
+      y: local.y - world.y * nextZoom
+    });
+  };
+
+  const zoomByFactor = (factor: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    zoomAtPoint(
+      { x: el.clientWidth / 2, y: el.clientHeight / 2 },
+      zoomRef.current * factor
+    );
+  };
+
+  const resetView = () => {
+    applyView(1.0, { x: 40, y: 30 });
+  };
+
+  // Native non-passive wheel listener: trackpad pinch + wheel zoom anchored at cursor
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const local = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const factor = Math.exp(-event.deltaY * 0.0016);
+      zoomAtPoint(local, zoomRef.current * factor);
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  const snapValue = (value: number) => (snapToGrid ? Math.round(value / 20) * 20 : value);
+
+  const handlePointerDown = (event: React.PointerEvent) => {
+    const target = event.target as HTMLElement;
+    const scaleHandle = target.closest('[data-scale-handle]') as HTMLElement | null;
+
+    // Interactive controls and pins keep their native click behaviour.
+    if (!scaleHandle) {
+      if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('[data-pin]')) {
+        return;
+      }
+      if (target.closest('[data-wire]')) {
+        return;
+      }
+    }
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+    const container = containerRef.current;
+    if (!container) return;
+    container.setPointerCapture(event.pointerId);
+    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    const local = getLocalPoint(event.clientX, event.clientY);
+    const world = localToWorld(local);
+    setMousePos(world);
+
+    if (activePointersRef.current.size === 1) {
+      if (scaleHandle && selectedCompId) {
+        const comp = project.components.find((item) => item.id === selectedCompId);
+        if (comp) {
+          const compWidth = comp.width || 240;
+          const compHeight = comp.height || 60 + Math.max(comp.pins.length / 2, 2) * 26;
+          const centerWorld = {
+            x: comp.x + compWidth / 2,
+            y: comp.y + compHeight / 2
+          };
+          gestureRef.current = {
+            mode: 'scale',
+            compId: comp.id,
+            centerWorld,
+            startDist: Math.max(8, Math.hypot(world.x - centerWorld.x, world.y - centerWorld.y)),
+            startScale: comp.scale || 1.0
+          };
+        }
+        return;
+      }
+
+      const compEl = target.closest('[data-component-id]') as HTMLElement | null;
+      const mcuEl = target.closest('[data-mcu]') as HTMLElement | null;
+
+      if (compEl?.dataset.componentId) {
+        const compId = compEl.dataset.componentId;
+        const comp = project.components.find((item) => item.id === compId);
+        if (comp) {
+          setSelectedCompId(compId);
+          setSelectedWireId(null);
+          setDraggingCompId(compId);
+          gestureRef.current = {
+            mode: 'drag',
+            compId,
+            offset: { x: world.x - comp.x, y: world.y - comp.y }
+          };
+        }
+      } else if (mcuEl) {
+        setSelectedCompId(null);
+        setSelectedWireId(null);
+        setDraggingCompId('mcu');
+        gestureRef.current = {
+          mode: 'drag-mcu',
+          offset: { x: world.x - mcuPosRef.current.x, y: world.y - mcuPosRef.current.y }
+        };
+      } else {
+        setIsPanning(true);
+        setSelectedCompId(null);
+        setSelectedWireId(null);
+        gestureRef.current = {
+          mode: 'pan',
+          startClient: { x: event.clientX, y: event.clientY },
+          startPan: { ...panRef.current }
+        };
+      }
+      return;
+    }
+
+    if (activePointersRef.current.size === 2) {
+      const points = Array.from(activePointersRef.current.values());
+      const [a, b] = points;
+      const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const localMid = getLocalPoint(midClient.x, midClient.y);
+      gestureRef.current = {
+        mode: 'pinch',
+        startDist: Math.max(8, Math.hypot(a.x - b.x, a.y - b.y)),
+        startZoom: zoomRef.current,
+        anchorWorld: localToWorld(localMid)
+      };
+      setIsPanning(false);
+      setDraggingCompId(null);
+    }
+  };
+
+  const handlePointerMove = (event: React.PointerEvent) => {
+    const world = localToWorld(getLocalPoint(event.clientX, event.clientY));
+    setMousePos(world);
+
+    if (!activePointersRef.current.has(event.pointerId)) return;
+    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    const gesture = gestureRef.current;
+    if (!gesture) return;
+
+    if (gesture.mode === 'pinch') {
+      if (activePointersRef.current.size < 2) return;
+      const points = Array.from(activePointersRef.current.values());
+      const [a, b] = points;
+      const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const localMid = getLocalPoint(midClient.x, midClient.y);
+      const nextZoom = clampZoom(
+        gesture.startZoom * (Math.hypot(a.x - b.x, a.y - b.y) / gesture.startDist)
+      );
+      applyView(nextZoom, {
+        x: localMid.x - gesture.anchorWorld.x * nextZoom,
+        y: localMid.y - gesture.anchorWorld.y * nextZoom
       });
       return;
     }
 
-    if (draggingCompId) {
-      let newX = coords.x - dragOffset.x;
-      let newY = coords.y - dragOffset.y;
-      if (snapToGrid) {
-        newX = Math.round(newX / 20) * 20;
-        newY = Math.round(newY / 20) * 20;
-      }
-      onUpdateComponentPosition(draggingCompId, Math.max(380, Math.round(newX)), Math.max(10, Math.round(newY)));
+    if (gesture.mode === 'pan') {
+      applyView(zoomRef.current, {
+        x: gesture.startPan.x + (event.clientX - gesture.startClient.x),
+        y: gesture.startPan.y + (event.clientY - gesture.startClient.y)
+      });
+      return;
+    }
+
+    if (gesture.mode === 'drag' && gesture.compId) {
+      const nextX = snapValue(world.x - gesture.offset.x);
+      const nextY = snapValue(world.y - gesture.offset.y);
+      onUpdateComponentPosition(
+        gesture.compId,
+        Math.max(-200, Math.round(nextX)),
+        Math.max(-200, Math.round(nextY))
+      );
+      return;
+    }
+
+    if (gesture.mode === 'drag-mcu') {
+      const nextX = snapValue(world.x - gesture.offset.x);
+      const nextY = snapValue(world.y - gesture.offset.y);
+      setMcuPos({
+        x: Math.max(0, Math.round(nextX)),
+        y: Math.max(-200, Math.round(nextY))
+      });
+      return;
+    }
+
+    if (gesture.mode === 'scale') {
+      const distance = Math.hypot(
+        world.x - gesture.centerWorld.x,
+        world.y - gesture.centerWorld.y
+      );
+      const nextScale = Math.min(
+        2.6,
+        Math.max(0.4, gesture.startScale * (distance / gesture.startDist))
+      );
+      onUpdateComponentTransform?.(gesture.compId, { scale: nextScale });
     }
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    // Only pan if clicking on empty background
-    if (e.target === containerRef.current || (e.target as HTMLElement).tagName === 'svg') {
-      setIsPanning(true);
-      setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-      setSelectedWireId(null);
-      setSelectedCompId(null);
+  const endPointerGesture = (event: React.PointerEvent) => {
+    activePointersRef.current.delete(event.pointerId);
+    if (containerRef.current?.hasPointerCapture(event.pointerId)) {
+      containerRef.current.releasePointerCapture(event.pointerId);
     }
-  };
 
-  const handleMouseUp = () => {
-    setIsPanning(false);
+    if (activePointersRef.current.size === 0) {
+      gestureRef.current = null;
+      setIsPanning(false);
+      setDraggingCompId(null);
+      return;
+    }
+
+    // Keep the remaining finger usable as a one-finger pan.
+    const remaining = Array.from(activePointersRef.current.values())[0];
+    gestureRef.current = {
+      mode: 'pan',
+      startClient: { x: remaining.x, y: remaining.y },
+      startPan: { ...panRef.current }
+    };
+    setIsPanning(true);
     setDraggingCompId(null);
   };
 
@@ -288,23 +521,27 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   return (
     <div
       ref={containerRef}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      className="relative w-full h-full bg-[#070b12] overflow-hidden select-none cursor-crosshair"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={endPointerGesture}
+      onPointerCancel={endPointerGesture}
+      className={`relative w-full h-full bg-[#070b12] overflow-hidden select-none touch-none ${
+        isPanning ? 'cursor-grabbing' : draggingCompId ? 'cursor-move' : 'cursor-crosshair'
+      } ${uiHidden ? 'ui-hidden' : ''}`}
       style={{
         backgroundImage: `
-          radial-gradient(circle at 1px 1px, rgba(56, 189, 248, 0.08) 1px, transparent 0),
-          linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-          linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px)
+          radial-gradient(circle at 1px 1px, rgba(56, 189, 248, 0.10) 1px, transparent 0),
+          linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px)
         `,
-        backgroundSize: '24px 24px, 120px 120px, 120px 120px'
+        backgroundSize: `${24 * zoom}px ${24 * zoom}px, ${120 * zoom}px ${120 * zoom}px, ${120 * zoom}px ${120 * zoom}px`,
+        backgroundPosition: `${pan.x}px ${pan.y}px`
       }}
     >
       {/* Floating Canvas Controls */}
-      <div className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 p-1 rounded-lg shadow-xl text-slate-300">
+      <div data-ui-overlay className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 p-1 rounded-lg shadow-xl text-slate-300">
         <button
-          onClick={() => setZoom((z) => Math.min(2.0, z + 0.15))}
+          onClick={() => zoomByFactor(1.16)}
           className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
           title="Zoom In"
           aria-label="Zoom In"
@@ -312,7 +549,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setZoom((z) => Math.max(0.4, z - 0.15))}
+          onClick={() => zoomByFactor(1 / 1.16)}
           className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
           title="Zoom Out"
           aria-label="Zoom Out"
@@ -320,10 +557,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           <ZoomOut className="w-4 h-4" />
         </button>
         <button
-          onClick={() => {
-            setZoom(1.0);
-            setPan({ x: 40, y: 30 });
-          }}
+          onClick={resetView}
           className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
           title="Reset View"
           aria-label="Reset View"
@@ -356,7 +590,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
         const currentScale = selectedComp.scale || 1.0;
 
         return (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-slate-900/95 backdrop-blur border border-cyan-500/50 text-slate-200 px-3.5 py-1.5 rounded-xl shadow-2xl text-xs animate-in fade-in">
+          <div data-ui-overlay className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-slate-900/95 backdrop-blur border border-cyan-500/50 text-slate-200 px-3.5 py-1.5 rounded-xl shadow-2xl text-xs animate-in fade-in">
             <div className="flex items-center gap-1.5 border-r border-slate-700/80 pr-2.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span className="font-semibold text-white truncate max-w-[120px]">{selectedComp.name}</span>
@@ -423,7 +657,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
       {/* Wire Connection Helper Banner */}
       {pendingWire && (
-        <div className="absolute top-4 right-4 z-30 flex items-center gap-3 bg-cyan-950/95 border border-cyan-500/50 text-cyan-200 px-4 py-2 rounded-lg shadow-2xl text-xs animate-bounce">
+        <div data-ui-overlay className="absolute top-4 right-4 z-30 flex items-center gap-3 bg-cyan-950/95 border border-cyan-500/50 text-cyan-200 px-4 py-2 rounded-lg shadow-2xl text-xs animate-bounce">
           <Sparkles className="w-4 h-4 text-cyan-400" />
           <span>
             Connecting wire from <strong className="text-white">{pendingWire.fromPinName}</strong>. Click any target pin to attach.
@@ -440,7 +674,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
       {/* Selected Wire Inspector Bar */}
       {selectedWireId && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-200 px-4 py-2.5 rounded-xl shadow-2xl text-xs">
+        <div data-ui-overlay className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-200 px-4 py-2.5 rounded-xl shadow-2xl text-xs">
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-full border border-white/20" style={{
               backgroundColor: project.wires.find((w) => w.id === selectedWireId)?.color || '#38bdf8'
@@ -508,10 +742,15 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
             const strokeWidth = wire.gauge === '22AWG' ? 4 : wire.gauge === 'FPC-Ribbon' ? 5 : 2.5;
 
             return (
-              <g key={wire.id} className="cursor-pointer pointer-events-auto" onClick={(e) => {
-                e.stopPropagation();
-                setSelectedWireId(wire.id);
-              }}>
+              <g
+                key={wire.id}
+                data-wire={wire.id}
+                className="cursor-pointer pointer-events-auto"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedWireId(wire.id);
+                }}
+              >
                 {/* Thick invisible hit area for easy clicking */}
                 <path
                   d={pathData}
@@ -562,11 +801,17 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
         {/* --- MCU Board Node --- */}
         <div
+          data-mcu
           style={{
             transform: `translate(${mcuPos.x}px, ${mcuPos.y}px)`,
             width: '280px'
           }}
-          className="absolute z-20 bg-slate-900/95 border-2 border-cyan-500/80 rounded-2xl shadow-2xl shadow-cyan-950/50 backdrop-blur p-4"
+          className={`absolute z-20 bg-slate-900/95 border-2 rounded-2xl shadow-2xl shadow-cyan-950/50 backdrop-blur p-4 cursor-move touch-none transition-shadow ${
+            draggingCompId === 'mcu'
+              ? 'border-cyan-400 ring-2 ring-cyan-400/40'
+              : 'border-cyan-500/80 hover:border-cyan-400'
+          }`}
+          title="Drag the board to reposition it"
         >
           {/* MCU Header */}
           <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
@@ -650,6 +895,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           return (
             <div
               key={comp.id}
+              data-component-id={comp.id}
               style={{
                 transform: `translate(${comp.x}px, ${comp.y}px) rotate(${rotation}deg) scale(${scale})`,
                 transformOrigin: 'center center',
@@ -659,18 +905,10 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                 isSelected
                   ? 'border-cyan-400 ring-2 ring-cyan-500/50 shadow-2xl shadow-cyan-950/80'
                   : 'border-slate-700/80 hover:border-slate-500 shadow-xl'
-              } rounded-xl backdrop-blur p-3 cursor-move transition-shadow select-none`}
+              } rounded-xl backdrop-blur p-3 cursor-move transition-shadow select-none touch-none`}
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedCompId(comp.id);
-              }}
-              onMouseDown={(e) => {
-                if ((e.target as HTMLElement).tagName !== 'BUTTON' && !(e.target as HTMLElement).closest('[data-pin]')) {
-                  const coords = getCanvasCoords(e);
-                  setSelectedCompId(comp.id);
-                  setDraggingCompId(comp.id);
-                  setDragOffset({ x: coords.x - comp.x, y: coords.y - comp.y });
-                }
               }}
             >
               {/* Component Header */}
@@ -742,14 +980,38 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                     ))}
                 </div>
               </div>
+
+              {/* Touch / mouse resize handle */}
+              {isSelected && (
+                <button
+                  type="button"
+                  data-scale-handle
+                  onClick={(event) => event.stopPropagation()}
+                  className="absolute -bottom-3 -right-3 w-8 h-8 rounded-full bg-cyan-500 text-slate-950 border-2 border-slate-950 shadow-lg shadow-cyan-500/40 flex items-center justify-center cursor-nwse-resize touch-none z-30 hover:bg-cyan-400 active:scale-95 transition-transform"
+                  title="Drag to scale component"
+                  aria-label={`Scale ${comp.name}`}
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
           );
         })}
       </div>
 
+      {/* Gesture Hint */}
+      <div data-ui-overlay className="hidden md:flex absolute bottom-4 left-4 z-20 items-center gap-2 bg-slate-950/80 backdrop-blur border border-slate-800 rounded-lg px-3 py-1.5 text-[10px] text-slate-400 font-mono pointer-events-none">
+        <Move className="w-3.5 h-3.5 text-cyan-400" />
+        <span>Drag to move</span>
+        <span className="text-slate-700">•</span>
+        <span>Pinch / wheel to zoom</span>
+        <span className="text-slate-700">•</span>
+        <span>Corner handle to resize</span>
+      </div>
+
       {/* Pin Hover Tooltip Card */}
       {hoveredPin && (
-        <div className="absolute bottom-6 right-6 z-40 bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl text-xs max-w-xs pointer-events-none backdrop-blur">
+        <div data-ui-overlay className="absolute bottom-6 right-6 z-40 bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl text-xs max-w-xs pointer-events-none backdrop-blur">
           <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5 mb-2">
             <span className="font-bold text-white">{hoveredPin.pin.name}</span>
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
