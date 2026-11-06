@@ -1,0 +1,22 @@
+{
+  "name": "ESP-Forge Studio",
+  "short_name": "ESPForge",
+  "description": "Universal Web, PC & Android CAD studio for ESP32-S3, ESP32-P4 and custom IoT devices.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#030712",
+  "theme_color": "#090d16",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192' fill='%2306b6d4'><rect width='192' height='192' rx='36' fill='%230f172a'/><path d='M96 28L28 68l68 40 68-40-68-40zM28 124l68 40 68-40M28 96l68 40 68-40' stroke='%2306b6d4' stroke-width='10' fill='none' stroke-linejoin='round'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512' fill='%2306b6d4'><rect width='512' height='512' rx='96' fill='%230f172a'/><path d='M256 80L80 184l176 104 176-104-176-104zM80 328l176 104 176-104M80 256l176 104 176-104' stroke='%2306b6d4' stroke-width='24' fill='none' stroke-linejoin='round'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

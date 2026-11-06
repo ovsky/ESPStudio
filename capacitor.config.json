@@ -1,0 +1,16 @@
+{
+  "appId": "io.espforge.studio",
+  "appName": "ESP-Forge Studio",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "buildOptions": {
+      "keystorePath": "release-key.keystore",
+      "keystoreAlias": "espforge"
+    }
+  }
+}

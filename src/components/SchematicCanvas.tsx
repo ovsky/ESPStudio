@@ -1,0 +1,640 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Trash2,
+  AlertCircle,
+  HelpCircle,
+  Check,
+  X,
+  ShieldAlert,
+  Cpu,
+  Layers,
+  Sparkles
+} from 'lucide-react';
+import {
+  DeviceProject,
+  ComponentModule,
+  WireConnection,
+  PinDefinition,
+  PinSignalType,
+  WireType
+} from '../types/hardware';
+
+interface SchematicCanvasProps {
+  project: DeviceProject;
+  onUpdateComponentPosition: (componentId: string, x: number, y: number) => void;
+  onAddWire: (wire: Omit<WireConnection, 'id'>) => void;
+  onDeleteWire: (wireId: string) => void;
+  onRemoveComponent: (componentId: string) => void;
+}
+
+interface PendingWireConnection {
+  fromComponentId: string;
+  fromPinId: string;
+  fromPinName: string;
+  fromX: number;
+  fromY: number;
+}
+
+export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
+  project,
+  onUpdateComponentPosition,
+  onAddWire,
+  onDeleteWire,
+  onRemoveComponent
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Pan & Zoom
+  const [zoom, setZoom] = useState(1.0);
+  const [pan, setPan] = useState({ x: 40, y: 30 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+
+  // Dragging Component
+  const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  // Wire Connection Mode
+  const [pendingWire, setPendingWire] = useState<PendingWireConnection | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  // Selected Wire
+  const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
+
+  // Pin hover tooltip
+  const [hoveredPin, setHoveredPin] = useState<{
+    pin: PinDefinition;
+    compName: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // Fixed MCU board position on canvas
+  const mcuPos = { x: 70, y: 60 };
+
+  // Calculate pin world coordinates for wire routing
+  const getPinCoordinate = (componentId: string, pinId: string): { x: number; y: number } => {
+    if (componentId === 'mcu') {
+      const pin = project.mcu.pins.find((p) => p.id === pinId);
+      if (!pin) return { x: mcuPos.x + 140, y: mcuPos.y + 100 };
+      const isLeft = pin.side === 'left';
+      // MCU dimensions: width 280, height ~ 600
+      const x = isLeft ? mcuPos.x : mcuPos.x + 280;
+      const y = mcuPos.y + 70 + (pin.order - 1) * 26;
+      return { x, y };
+    }
+
+    const comp = project.components.find((c) => c.id === componentId);
+    if (!comp) return { x: 400, y: 200 };
+
+    const pin = comp.pins.find((p) => p.id === pinId);
+    if (!pin) return { x: comp.x + 120, y: comp.y + 60 };
+
+    const compWidth = comp.width || 240;
+    const isLeft = pin.side === 'left';
+    const x = isLeft ? comp.x : comp.x + compWidth;
+    const y = comp.y + 55 + (pin.order - 1) * 26;
+    return { x, y };
+  };
+
+  // Convert mouse event to canvas world coordinates
+  const getCanvasCoords = (e: React.MouseEvent | MouseEvent) => {
+    if (!containerRef.current) return { x: 0, y: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left - pan.x) / zoom,
+      y: (e.clientY - rect.top - pan.y) / zoom
+    };
+  };
+
+  // Mouse Move handling
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const coords = getCanvasCoords(e);
+    setMousePos(coords);
+
+    if (isPanning) {
+      setPan({
+        x: e.clientX - startPan.x,
+        y: e.clientY - startPan.y
+      });
+      return;
+    }
+
+    if (draggingCompId) {
+      const newX = Math.round(coords.x - dragOffset.x);
+      const newY = Math.round(coords.y - dragOffset.y);
+      onUpdateComponentPosition(draggingCompId, Math.max(380, newX), Math.max(10, newY));
+    }
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    // Only pan if clicking on empty background
+    if (e.target === containerRef.current || (e.target as HTMLElement).tagName === 'svg') {
+      setIsPanning(true);
+      setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      setSelectedWireId(null);
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsPanning(false);
+    setDraggingCompId(null);
+  };
+
+  // Auto-detect wire type & color
+  const detectWireProperties = (
+    pinA: PinDefinition,
+    pinB: PinDefinition
+  ): { wireType: WireType; color: string; netName: string } => {
+    if (pinA.voltageDomain === 'GND' || pinB.voltageDomain === 'GND') {
+      return { wireType: 'power-gnd', color: '#0f172a', netName: 'GND' };
+    }
+    if (pinA.voltageDomain === '5V' || pinB.voltageDomain === '5V') {
+      return { wireType: 'power-vcc', color: '#ef4444', netName: '5V' };
+    }
+    if (pinA.voltageDomain === '3.3V' && pinB.voltageDomain === '3.3V' && (pinA.id.includes('3v') || pinB.id.includes('3v'))) {
+      return { wireType: 'power-vcc', color: '#f87171', netName: '3V3' };
+    }
+    if (pinA.supportedSignals.includes('I2C_SDA') || pinB.supportedSignals.includes('I2C_SDA')) {
+      return { wireType: 'i2c', color: '#06b6d4', netName: 'I2C_SDA' };
+    }
+    if (pinA.supportedSignals.includes('I2C_SCL') || pinB.supportedSignals.includes('I2C_SCL')) {
+      return { wireType: 'i2c', color: '#e879f9', netName: 'I2C_SCL' };
+    }
+    if (pinA.supportedSignals.includes('SPI_MOSI') || pinB.supportedSignals.includes('SPI_MOSI')) {
+      return { wireType: 'spi', color: '#0ea5e9', netName: 'SPI_MOSI' };
+    }
+    if (pinA.supportedSignals.includes('SPI_SCK') || pinB.supportedSignals.includes('SPI_SCK')) {
+      return { wireType: 'spi', color: '#6366f1', netName: 'SPI_SCK' };
+    }
+    if (pinA.supportedSignals.includes('UART_TX') || pinB.supportedSignals.includes('UART_TX')) {
+      return { wireType: 'uart', color: '#f59e0b', netName: 'UART' };
+    }
+    if (pinA.supportedSignals.includes('MIPI_DSI') || pinB.supportedSignals.includes('MIPI_DSI')) {
+      return { wireType: 'mipi', color: '#8b5cf6', netName: 'MIPI_DSI' };
+    }
+    if (pinA.supportedSignals.includes('I2S_DATA') || pinB.supportedSignals.includes('I2S_DATA')) {
+      return { wireType: 'i2s', color: '#10b981', netName: 'I2S_DATA' };
+    }
+    return { wireType: 'gpio', color: '#22c55e', netName: 'SIGNAL' };
+  };
+
+  // Pin Click handling
+  const handlePinClick = (
+    componentId: string,
+    pin: PinDefinition,
+    e: React.MouseEvent
+  ) => {
+    e.stopPropagation();
+
+    if (!pendingWire) {
+      // Start wire
+      const pinCoords = getPinCoordinate(componentId, pin.id);
+      setPendingWire({
+        fromComponentId: componentId,
+        fromPinId: pin.id,
+        fromPinName: pin.name,
+        fromX: pinCoords.x,
+        fromY: pinCoords.y
+      });
+    } else {
+      // Finish wire if not same pin
+      if (pendingWire.fromComponentId === componentId && pendingWire.fromPinId === pin.id) {
+        setPendingWire(null);
+        return;
+      }
+
+      // Find fromPin definition
+      let fromPin: PinDefinition | undefined;
+      if (pendingWire.fromComponentId === 'mcu') {
+        fromPin = project.mcu.pins.find((p) => p.id === pendingWire.fromPinId);
+      } else {
+        const c = project.components.find((c) => c.id === pendingWire.fromComponentId);
+        fromPin = c?.pins.find((p) => p.id === pendingWire.fromPinId);
+      }
+
+      if (fromPin) {
+        const detected = detectWireProperties(fromPin, pin);
+        onAddWire({
+          fromComponentId: pendingWire.fromComponentId,
+          fromPinId: pendingWire.fromPinId,
+          toComponentId: componentId,
+          toPinId: pin.id,
+          wireType: detected.wireType,
+          color: detected.color,
+          gauge: detected.wireType === 'power-vcc' || detected.wireType === 'power-gnd' ? '24AWG' : '28AWG',
+          lengthMm: 45,
+          netName: detected.netName
+        });
+      }
+
+      setPendingWire(null);
+    }
+  };
+
+  // Pin badge color helper
+  const getPinSignalColor = (pin: PinDefinition) => {
+    if (pin.voltageDomain === 'GND') return 'bg-slate-700 text-slate-300';
+    if (pin.voltageDomain === '5V') return 'bg-red-950 text-red-400 border border-red-800';
+    if (pin.id.includes('3v') || pin.name.includes('3V3')) return 'bg-rose-950 text-rose-300 border border-rose-800';
+    if (pin.supportedSignals.includes('I2C_SDA') || pin.supportedSignals.includes('I2C_SCL')) return 'bg-cyan-950 text-cyan-300 border border-cyan-800';
+    if (pin.supportedSignals.includes('SPI_MOSI') || pin.supportedSignals.includes('SPI_SCK')) return 'bg-indigo-950 text-indigo-300 border border-indigo-800';
+    if (pin.supportedSignals.includes('UART_TX') || pin.supportedSignals.includes('UART_RX')) return 'bg-amber-950 text-amber-300 border border-amber-800';
+    if (pin.supportedSignals.includes('MIPI_DSI') || pin.supportedSignals.includes('MIPI_CSI')) return 'bg-violet-950 text-violet-300 border border-violet-800';
+    if (pin.supportedSignals.includes('I2S_DATA') || pin.supportedSignals.includes('I2S_BCLK')) return 'bg-emerald-950 text-emerald-300 border border-emerald-800';
+    if (pin.isStrappingPin) return 'bg-orange-950 text-orange-300 border border-orange-700';
+    return 'bg-slate-800 text-slate-300';
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      className="relative w-full h-full bg-[#070b12] overflow-hidden select-none cursor-crosshair"
+      style={{
+        backgroundImage: `
+          radial-gradient(circle at 1px 1px, rgba(56, 189, 248, 0.08) 1px, transparent 0),
+          linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px)
+        `,
+        backgroundSize: '24px 24px, 120px 120px, 120px 120px'
+      }}
+    >
+      {/* Floating Canvas Controls */}
+      <div className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 p-1 rounded-lg shadow-xl text-slate-300">
+        <button
+          onClick={() => setZoom((z) => Math.min(2.0, z + 0.15))}
+          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
+          title="Zoom In"
+          aria-label="Zoom In"
+        >
+          <ZoomIn className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => setZoom((z) => Math.max(0.4, z - 0.15))}
+          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
+          title="Zoom Out"
+          aria-label="Zoom Out"
+        >
+          <ZoomOut className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => {
+            setZoom(1.0);
+            setPan({ x: 40, y: 30 });
+          }}
+          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
+          title="Reset View"
+          aria-label="Reset View"
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+        <span className="text-[11px] font-mono px-2 text-slate-400">
+          {Math.round(zoom * 100)}%
+        </span>
+      </div>
+
+      {/* Wire Connection Helper Banner */}
+      {pendingWire && (
+        <div className="absolute top-4 right-4 z-30 flex items-center gap-3 bg-cyan-950/95 border border-cyan-500/50 text-cyan-200 px-4 py-2 rounded-lg shadow-2xl text-xs animate-bounce">
+          <Sparkles className="w-4 h-4 text-cyan-400" />
+          <span>
+            Connecting wire from <strong className="text-white">{pendingWire.fromPinName}</strong>. Click any target pin to attach.
+          </span>
+          <button
+            onClick={() => setPendingWire(null)}
+            className="p-1 hover:bg-cyan-900 rounded text-cyan-400 hover:text-white"
+            title="Cancel wire"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Selected Wire Inspector Bar */}
+      {selectedWireId && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-200 px-4 py-2.5 rounded-xl shadow-2xl text-xs">
+          <div className="flex items-center gap-2">
+            <span className="w-3 h-3 rounded-full border border-white/20" style={{
+              backgroundColor: project.wires.find((w) => w.id === selectedWireId)?.color || '#38bdf8'
+            }} />
+            <span className="font-semibold text-white">
+              Net: {project.wires.find((w) => w.id === selectedWireId)?.netName || selectedWireId}
+            </span>
+            <span className="text-slate-400 font-mono">
+              ({project.wires.find((w) => w.id === selectedWireId)?.gauge}, {project.wires.find((w) => w.id === selectedWireId)?.lengthMm}mm)
+            </span>
+          </div>
+
+          <button
+            onClick={() => {
+              onDeleteWire(selectedWireId);
+              setSelectedWireId(null);
+            }}
+            className="flex items-center gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 px-2.5 py-1 rounded border border-rose-900/60 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Delete Wire</span>
+          </button>
+
+          <button
+            onClick={() => setSelectedWireId(null)}
+            className="text-slate-400 hover:text-white"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Main Pan/Zoom Canvas Wrapper */}
+      <div
+        className="w-full h-full origin-top-left"
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`
+        }}
+      >
+        {/* SVG Wire Layer */}
+        <svg
+          className="absolute inset-0 w-[4000px] h-[3000px] pointer-events-none z-10"
+          style={{ overflow: 'visible' }}
+        >
+          <defs>
+            <filter id="wire-glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          {/* Existing Wires */}
+          {project.wires.map((wire) => {
+            const start = getPinCoordinate(wire.fromComponentId, wire.fromPinId);
+            const end = getPinCoordinate(wire.toComponentId, wire.toPinId);
+            const isSelected = wire.id === selectedWireId;
+
+            // Compute smooth Bezier Control Points
+            const dx = Math.abs(end.x - start.x) * 0.55;
+            const pathData = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+
+            const strokeWidth = wire.gauge === '22AWG' ? 4 : wire.gauge === 'FPC-Ribbon' ? 5 : 2.5;
+
+            return (
+              <g key={wire.id} className="cursor-pointer pointer-events-auto" onClick={(e) => {
+                e.stopPropagation();
+                setSelectedWireId(wire.id);
+              }}>
+                {/* Thick invisible hit area for easy clicking */}
+                <path
+                  d={pathData}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14}
+                />
+                {/* Outer Glow when selected */}
+                {isSelected && (
+                  <path
+                    d={pathData}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth={strokeWidth + 6}
+                    opacity={0.4}
+                  />
+                )}
+                {/* Visible Wire Body */}
+                <path
+                  d={pathData}
+                  fill="none"
+                  stroke={wire.color}
+                  strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  filter="url(#wire-glow)"
+                  opacity={isSelected ? 1.0 : 0.85}
+                  strokeDasharray={wire.wireType === 'i2c' ? '6 3' : wire.wireType === 'spi' ? '8 2' : 'none'}
+                />
+                {/* Pin solder points */}
+                <circle cx={start.x} cy={start.y} r={4.5} fill={wire.color} stroke="#020617" strokeWidth={1.5} />
+                <circle cx={end.x} cy={end.y} r={4.5} fill={wire.color} stroke="#020617" strokeWidth={1.5} />
+              </g>
+            );
+          })}
+
+          {/* Live Dragging Wire */}
+          {pendingWire && (
+            <path
+              d={`M ${pendingWire.fromX} ${pendingWire.fromY} Q ${(pendingWire.fromX + mousePos.x) / 2} ${(pendingWire.fromY + mousePos.y) / 2 - 30}, ${mousePos.x} ${mousePos.y}`}
+              fill="none"
+              stroke="#38bdf8"
+              strokeWidth={3}
+              strokeDasharray="4 4"
+              className="animate-pulse"
+            />
+          )}
+        </svg>
+
+        {/* --- MCU Board Node --- */}
+        <div
+          style={{
+            transform: `translate(${mcuPos.x}px, ${mcuPos.y}px)`,
+            width: '280px'
+          }}
+          className="absolute z-20 bg-slate-900/95 border-2 border-cyan-500/80 rounded-2xl shadow-2xl shadow-cyan-950/50 backdrop-blur p-4"
+        >
+          {/* MCU Header */}
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-cyan-950 border border-cyan-700 flex items-center justify-center text-cyan-400 font-mono font-bold text-xs">
+                SoC
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-white tracking-tight leading-tight">{project.mcu.name}</h3>
+                <span className="text-[10px] text-cyan-400 font-mono">{project.mcu.cpuArchitecture}</span>
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800">
+              {project.mcu.clockSpeedMhz}MHz
+            </span>
+          </div>
+
+          {/* Quick Specs Chips */}
+          <div className="grid grid-cols-2 gap-1.5 mb-4 text-[10px] font-mono text-slate-300">
+            <div className="bg-slate-950/80 px-2 py-1 rounded border border-slate-800">
+              Flash: <span className="text-white font-bold">{project.mcu.flashSizeMb}MB</span>
+            </div>
+            <div className="bg-slate-950/80 px-2 py-1 rounded border border-slate-800">
+              PSRAM: <span className="text-white font-bold">{project.mcu.psramSizeMb}MB</span>
+            </div>
+          </div>
+
+          {/* Pins Columns */}
+          <div className="grid grid-cols-2 gap-2 text-[11px]">
+            {/* Left Header Pins */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-mono uppercase text-slate-500 block px-1">J1 Left Bus</span>
+              {project.mcu.pins
+                .filter((p) => p.side === 'left')
+                .map((pin) => (
+                  <div
+                    key={pin.id}
+                    onClick={(e) => handlePinClick('mcu', pin, e)}
+                    onMouseEnter={() => setHoveredPin({ pin, compName: project.mcu.name, x: mcuPos.x, y: mcuPos.y })}
+                    onMouseLeave={() => setHoveredPin(null)}
+                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                      pin
+                    )} hover:ring-2 hover:ring-cyan-400`}
+                  >
+                    <span className="truncate">{pin.name}</span>
+                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200" />
+                  </div>
+                ))}
+            </div>
+
+            {/* Right Header Pins */}
+            <div className="space-y-1">
+              <span className="text-[9px] font-mono uppercase text-slate-500 block px-1 text-right">J2 Right Bus</span>
+              {project.mcu.pins
+                .filter((p) => p.side === 'right')
+                .map((pin) => (
+                  <div
+                    key={pin.id}
+                    onClick={(e) => handlePinClick('mcu', pin, e)}
+                    onMouseEnter={() => setHoveredPin({ pin, compName: project.mcu.name, x: mcuPos.x + 280, y: mcuPos.y })}
+                    onMouseLeave={() => setHoveredPin(null)}
+                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                      pin
+                    )} hover:ring-2 hover:ring-cyan-400`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200" />
+                    <span className="truncate">{pin.name}</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </div>
+
+        {/* --- Draggable Modular Components --- */}
+        {project.components.map((comp) => {
+          const compWidth = comp.width || 240;
+
+          return (
+            <div
+              key={comp.id}
+              style={{
+                transform: `translate(${comp.x}px, ${comp.y}px)`,
+                width: `${compWidth}px`
+              }}
+              className="absolute z-20 bg-slate-900/95 border border-slate-700/80 hover:border-slate-500 rounded-xl shadow-xl backdrop-blur p-3 cursor-move transition-shadow"
+              onMouseDown={(e) => {
+                if ((e.target as HTMLElement).tagName !== 'BUTTON' && !(e.target as HTMLElement).closest('[data-pin]')) {
+                  const coords = getCanvasCoords(e);
+                  setDraggingCompId(comp.id);
+                  setDragOffset({ x: coords.x - comp.x, y: coords.y - comp.y });
+                }
+              }}
+            >
+              {/* Component Header */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                <div className="flex items-center gap-1.5 truncate">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <h4 className="font-semibold text-xs text-white truncate">{comp.name}</h4>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                    {comp.protocol}
+                  </span>
+                  <button
+                    onClick={() => onRemoveComponent(comp.id)}
+                    className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                    title="Remove module"
+                    aria-label={`Remove module ${comp.name}`}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Protocol & Power Info */}
+              <div className="flex items-center justify-between text-[10px] text-slate-400 mb-3 px-1">
+                <span>{comp.operatingVoltage}</span>
+                <span className="font-mono text-cyan-300">{comp.powerCurrentActiveMa}mA</span>
+              </div>
+
+              {/* Component Pins */}
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <div className="space-y-1">
+                  {comp.pins
+                    .filter((p) => p.side === 'left')
+                    .map((pin) => (
+                      <div
+                        key={pin.id}
+                        data-pin={pin.id}
+                        onClick={(e) => handlePinClick(comp.id, pin, e)}
+                        onMouseEnter={() => setHoveredPin({ pin, compName: comp.name, x: comp.x, y: comp.y })}
+                        onMouseLeave={() => setHoveredPin(null)}
+                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                          pin
+                        )} hover:ring-2 hover:ring-emerald-400`}
+                      >
+                        <span className="truncate">{pin.name}</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      </div>
+                    ))}
+                </div>
+
+                <div className="space-y-1">
+                  {comp.pins
+                    .filter((p) => p.side === 'right')
+                    .map((pin) => (
+                      <div
+                        key={pin.id}
+                        data-pin={pin.id}
+                        onClick={(e) => handlePinClick(comp.id, pin, e)}
+                        onMouseEnter={() => setHoveredPin({ pin, compName: comp.name, x: comp.x + compWidth, y: comp.y })}
+                        onMouseLeave={() => setHoveredPin(null)}
+                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                          pin
+                        )} hover:ring-2 hover:ring-emerald-400`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span className="truncate">{pin.name}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Pin Hover Tooltip Card */}
+      {hoveredPin && (
+        <div className="absolute bottom-6 right-6 z-40 bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl text-xs max-w-xs pointer-events-none backdrop-blur">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5 mb-2">
+            <span className="font-bold text-white">{hoveredPin.pin.name}</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+              {hoveredPin.pin.voltageDomain}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-300 mb-1">
+            <strong>Device:</strong> {hoveredPin.compName}
+          </p>
+          <p className="text-[11px] text-slate-400 mb-1">
+            <strong>Signals:</strong> {hoveredPin.pin.supportedSignals.join(', ')}
+          </p>
+          {hoveredPin.pin.isStrappingPin && (
+            <div className="flex items-start gap-1.5 text-amber-300 bg-amber-950/60 p-1.5 rounded border border-amber-800/80 mt-1.5 text-[10px]">
+              <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+              <span>{hoveredPin.pin.strappingNote || 'Boot strapping pin! Check default pull state.'}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
