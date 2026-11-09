@@ -23,8 +23,8 @@ test('generateBootloaderLogs creates standard ESP32 boot stages', () => {
   const logs = generateBootloaderLogs(phone);
 
   assert.ok(logs.length > 5, 'Should generate multi-stage boot logs');
-  assert.ok(logs.some(l => l.text.includes('POWERON_RESET')), 'Must contain poweron reset');
-  assert.ok(logs.some(l => l.text.includes('PSRAM')), 'Must initialize PSRAM');
+  assert.ok(logs.some((l) => l.text.includes('POWERON_RESET')), 'Must contain poweron reset');
+  assert.ok(logs.some((l) => l.text.includes('PSRAM')), 'Must initialize PSRAM');
 });
 
 test('processSerialCommand handles AT modem commands correctly', () => {

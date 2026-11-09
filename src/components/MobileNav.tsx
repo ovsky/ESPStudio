@@ -1,5 +1,12 @@
 import React from 'react';
-import { Cpu, Box, Zap, Code, FileSpreadsheet, Terminal } from 'lucide-react';
+import {
+  Cpu,
+  Box,
+  Zap,
+  Code,
+  Play,
+  FileSpreadsheet
+} from 'lucide-react';
 import { ActiveTab } from './Header';
 
 interface MobileNavProps {
@@ -8,51 +15,44 @@ interface MobileNavProps {
   issuesCount: { errors: number; warnings: number };
 }
 
-interface MobileTabItem {
-  id: ActiveTab;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  badge?: 'error' | 'warning' | null;
-}
-
 export const MobileNav: React.FC<MobileNavProps> = ({
   activeTab,
   onTabChange,
   issuesCount
 }) => {
-  const tabs: MobileTabItem[] = [
-    { id: 'canvas', label: 'Schematic', icon: Cpu },
-    { id: 'enclosure', label: '3D Device', icon: Box },
-    { id: 'rules', label: 'DRC', icon: Zap, badge: issuesCount.errors > 0 ? 'error' : issuesCount.warnings > 0 ? 'warning' : null },
-    { id: 'firmware', label: 'Firmware', icon: Code },
-    { id: 'emulator', label: 'Runner', icon: Terminal },
-    { id: 'bom', label: 'BOM', icon: FileSpreadsheet }
+  const tabs: Array<{ id: ActiveTab; label: string; icon: React.ReactNode; isAlert?: boolean }> = [
+    { id: 'canvas', label: 'Schematic', icon: <Cpu className="w-5 h-5" /> },
+    { id: 'enclosure', label: '3D Device', icon: <Box className="w-5 h-5" /> },
+    {
+      id: 'rules',
+      label: 'DRC',
+      icon: <Zap className="w-5 h-5" />,
+      isAlert: issuesCount.errors > 0 || issuesCount.warnings > 0
+    },
+    { id: 'firmware', label: 'Code', icon: <Code className="w-5 h-5" /> },
+    { id: 'emulator', label: 'Run MCU', icon: <Play className="w-5 h-5" /> },
+    { id: 'bom', label: 'BOM', icon: <FileSpreadsheet className="w-5 h-5" /> }
   ];
 
   return (
-    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex items-center justify-around py-2 px-2 text-slate-400">
-      {tabs.map((t) => {
-        const Icon = t.icon;
-        const isActive = activeTab === t.id;
-
+    <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-14 bg-slate-950/95 border-t border-slate-800/80 backdrop-blur-lg flex items-center justify-around z-40 px-2 select-none">
+      {tabs.map((tab) => {
+        const isAct = activeTab === tab.id;
         return (
           <button
-            key={t.id}
-            onClick={() => onTabChange(t.id as ActiveTab)}
-            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-[10px] font-medium transition-all relative cursor-pointer ${
-              isActive ? 'text-cyan-400 font-bold' : 'hover:text-slate-200'
+            key={tab.id}
+            onClick={() => onTabChange(tab.id)}
+            className={`flex flex-col items-center justify-center flex-1 py-1 relative transition-all cursor-pointer ${
+              isAct ? 'text-cyan-400 font-bold' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <div className="relative">
-              <Icon className="w-4 h-4" />
-              {t.badge === 'error' && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-              )}
-              {t.badge === 'warning' && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400" />
+              {tab.icon}
+              {tab.isAlert && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse border border-slate-950" />
               )}
             </div>
-            <span>{t.label}</span>
+            <span className="text-[10px] tracking-tight mt-0.5">{tab.label}</span>
           </button>
         );
       })}

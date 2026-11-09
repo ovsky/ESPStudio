@@ -1,193 +1,163 @@
-import { DeviceProject, PinConflictRuleIssue, PinDefinition, PinSignalType } from '../types/hardware';
+import {
+  DeviceProject,
+  CircuitValidationIssue,
+  HardwarePin
+} from '../types/hardware';
 
 /**
- * Validates hardware connections, strapping pins, bus topologies, and electrical domains.
+ * Validates circuit schematic connections for electrical hazards, pin contentions,
+ * strapping pin violations, and power rail integrity.
  */
-export function validateCircuit(project: DeviceProject): PinConflictRuleIssue[] {
-  const issues: PinConflictRuleIssue[] = [];
+export function validateCircuit(project: DeviceProject): CircuitValidationIssue[] {
+  const issues: CircuitValidationIssue[] = [];
 
-  const mcuPinMap = new Map<string, PinDefinition>();
-  for (const pin of project.mcu.pins) {
-    mcuPinMap.set(pin.id, pin);
-  }
+  // Helper: map pin IDs to pin objects
+  const findPin = (componentId: string, pinId: string): { pin: HardwarePin | null; compName: string } => {
+    if (componentId === 'mcu') {
+      const p = project.mcu.pins.find((pin) => pin.id === pinId) || null;
+      return { pin: p, compName: project.mcu.name };
+    }
+    const comp = project.components.find((c) => c.id === componentId);
+    if (!comp) return { pin: null, compName: 'Unknown' };
+    const p = comp.pins.find((pin) => pin.id === pinId) || null;
+    return { pin: p, compName: comp.name };
+  };
 
-  // Map each component pin
-  const compPinMap = new Map<string, { compId: string; compName: string; pin: PinDefinition }>();
-  for (const comp of project.components) {
-    for (const pin of comp.pins) {
-      compPinMap.set(`${comp.id}:${pin.id}`, {
-        compId: comp.id,
-        compName: comp.name,
-        pin
+  // Rule 1: Power & Ground Integrity per Component
+  project.components.forEach((comp) => {
+    const powerPins = comp.pins.filter((p) => p.electricalType === 'power');
+    const groundPins = comp.pins.filter((p) => p.electricalType === 'ground');
+
+    const hasPowerConnected = powerPins.some((p) =>
+      project.wires.some(
+        (w) =>
+          (w.fromComponentId === comp.id && w.fromPinId === p.id) ||
+          (w.toComponentId === comp.id && w.toPinId === p.id)
+      )
+    );
+
+    const hasGroundConnected = groundPins.some((p) =>
+      project.wires.some(
+        (w) =>
+          (w.fromComponentId === comp.id && w.fromPinId === p.id) ||
+          (w.toComponentId === comp.id && w.toPinId === p.id)
+      )
+    );
+
+    if (powerPins.length > 0 && !hasPowerConnected) {
+      issues.push({
+        id: `unpowered_${comp.id}`,
+        severity: 'error',
+        title: `Unpowered Module: ${comp.name}`,
+        description: `${comp.name} requires a ${comp.supplyVoltage} supply rail but has no power net connected.`,
+        affectedComponents: [comp.id],
+        affectedPins: powerPins.map((p) => p.id),
+        fixRecommendation: `Route a wire from the MCU ${comp.supplyVoltage} power pin to ${comp.name} VCC.`
       });
     }
-  }
 
-  // Track connections per pin
-  const pinConnectionsCount = new Map<string, { wires: string[]; targets: string[] }>();
-  for (const wire of project.wires) {
-    const fromKey = wire.fromComponentId === 'mcu' ? `mcu:${wire.fromPinId}` : `${wire.fromComponentId}:${wire.fromPinId}`;
-    const toKey = wire.toComponentId === 'mcu' ? `mcu:${wire.toPinId}` : `${wire.toComponentId}:${wire.toPinId}`;
+    if (groundPins.length > 0 && !hasGroundConnected) {
+      issues.push({
+        id: `floating_gnd_${comp.id}`,
+        severity: 'error',
+        title: `Floating Ground: ${comp.name}`,
+        description: `${comp.name} lacks a ground return path (GND wire missing), which prevents signal reference.`,
+        affectedComponents: [comp.id],
+        affectedPins: groundPins.map((p) => p.id),
+        fixRecommendation: `Connect ${comp.name} GND to the common system ground rail.`
+      });
+    }
+  });
 
-    if (!pinConnectionsCount.has(fromKey)) pinConnectionsCount.set(fromKey, { wires: [], targets: [] });
-    if (!pinConnectionsCount.has(toKey)) pinConnectionsCount.set(toKey, { wires: [], targets: [] });
+  // Rule 2: 5V Overvoltage Hazard Check (5V directly wired to 3.3V GPIO without level shifter)
+  project.wires.forEach((wire) => {
+    const from = findPin(wire.fromComponentId, wire.fromPinId);
+    const to = findPin(wire.toComponentId, wire.toPinId);
 
-    pinConnectionsCount.get(fromKey)!.wires.push(wire.id);
-    pinConnectionsCount.get(fromKey)!.targets.push(toKey);
+    if (!from.pin || !to.pin) return;
 
-    pinConnectionsCount.get(toKey)!.wires.push(wire.id);
-    pinConnectionsCount.get(toKey)!.targets.push(fromKey);
-  }
+    // Check if one is a 5V power or native 5V output and the other is a 3.3V GPIO input
+    const isFrom5v = from.pin.voltageDomain === '5.0V' && from.pin.electricalType === 'power';
+    const isTo3v3Digital = to.pin.voltageDomain === '3.3V' && to.pin.electricalType === 'digital';
 
-  // Rule 1: Check Strapping Pins on MCU
-  for (const pin of project.mcu.pins) {
-    if (pin.isStrappingPin) {
-      const key = `mcu:${pin.id}`;
-      const conns = pinConnectionsCount.get(key);
-      if (conns && conns.wires.length > 0) {
+    const isTo5v = to.pin.voltageDomain === '5.0V' && to.pin.electricalType === 'power';
+    const isFrom3v3Digital = from.pin.voltageDomain === '3.3V' && from.pin.electricalType === 'digital';
+
+    if ((isFrom5v && isTo3v3Digital) || (isTo5v && isFrom3v3Digital)) {
+      issues.push({
+        id: `overvoltage_${wire.id}`,
+        severity: 'error',
+        title: '5V Overvoltage Hazard on 3.3V GPIO',
+        description: `Wire connects a 5.0V rail directly to 3.3V sensitive digital GPIO pin (${isTo3v3Digital ? to.pin.label : from.pin.label}). This causes permanent gate oxide breakdown without a bidirectional level shifter.`,
+        affectedComponents: [wire.fromComponentId, wire.toComponentId],
+        affectedPins: [wire.fromPinId, wire.toPinId],
+        fixRecommendation: 'Remove direct wire or insert an inline bidirectional MOSFET level shifter (e.g., TXB0108).'
+      });
+    }
+  });
+
+  // Rule 3: Strapping Pin Bootstrap Warnings
+  project.wires.forEach((wire) => {
+    const from = findPin(wire.fromComponentId, wire.fromPinId);
+    const to = findPin(wire.toComponentId, wire.toPinId);
+
+    [from, to].forEach((item) => {
+      if (item.pin && item.pin.isStrappingPin) {
         issues.push({
+          id: `strapping_${wire.id}_${item.pin.id}`,
           severity: 'warning',
-          code: 'STRAPPING_PIN_USED',
-          title: `Strapping Pin Utilized: ${pin.name}`,
-          description: `${pin.name} is a boot strapping pin on ${project.mcu.name}. ${pin.strappingNote || 'Care must be taken to avoid pulling it unexpectedly at boot time.'}`,
-          involvedPinIds: [pin.id],
-          involvedComponentIds: ['mcu'],
-          recommendation: 'Ensure external circuitry or pull-up/pull-down resistors do not force the pin into the wrong logic level during power-on reset.'
+          title: `Strapping Pin Utilized: ${item.pin.label}`,
+          description: `${item.pin.label} is an internal bootloader strapping pin. Holding this line LOW during power-on triggers download boot mode rather than normal SPI flash execution.`,
+          affectedComponents: ['mcu'],
+          affectedPins: [item.pin.id],
+          fixRecommendation: 'Ensure connected peripheral keeps this line floating or pulled HIGH during cold boot.'
         });
       }
-    }
-  }
-
-  // Rule 2: Multiple non-bus drivers on same GPIO
-  for (const pin of project.mcu.pins) {
-    const key = `mcu:${pin.id}`;
-    const conns = pinConnectionsCount.get(key);
-    if (!conns || conns.wires.length <= 1) continue;
-
-    // Allowed bus sharings: I2C (SDA/SCL), SPI (SCK/MOSI/MISO with distinct CS), Power (3V3/5V/GND)
-    const isBusPin =
-      pin.supportedSignals.includes('I2C_SDA') ||
-      pin.supportedSignals.includes('I2C_SCL') ||
-      pin.supportedSignals.includes('SPI_SCK') ||
-      pin.supportedSignals.includes('SPI_MOSI') ||
-      pin.supportedSignals.includes('SPI_MISO') ||
-      pin.supportedSignals.includes('POWER_3V3') ||
-      pin.supportedSignals.includes('POWER_5V') ||
-      pin.supportedSignals.includes('GND');
-
-    if (!isBusPin) {
-      issues.push({
-        severity: 'error',
-        code: 'GPIO_CONTENTION',
-        title: `GPIO Contention on ${pin.name}`,
-        description: `${pin.name} is connected to ${conns.wires.length} endpoints simultaneously, but is not configured for a shared multidrop bus.`,
-        involvedPinIds: [pin.id],
-        involvedComponentIds: ['mcu'],
-        recommendation: 'Assign dedicated GPIOs for individual digital signals, SPI Chip Selects (CS), or UART links.'
-      });
-    }
-  }
-
-  // Rule 3: Missing GND Return Path on Modules
-  for (const comp of project.components) {
-    // Check if component has a GND pin defined
-    const gndPin = comp.pins.find(p => p.supportedSignals.includes('GND'));
-    if (gndPin) {
-      const gndKey = `${comp.id}:${gndPin.id}`;
-      const conns = pinConnectionsCount.get(gndKey);
-      if (!conns || conns.wires.length === 0) {
-        issues.push({
-          severity: 'error',
-          code: 'FLOATING_GND',
-          title: `Floating Ground on "${comp.name}"`,
-          description: `Component "${comp.name}" does not have its GND pin wired to system Ground. A return current path is strictly required.`,
-          involvedPinIds: [gndPin.id],
-          involvedComponentIds: [comp.id],
-          recommendation: `Connect pin "${gndPin.name}" to MCU GND or power supply ground rail.`
-        });
-      }
-    }
-
-    // Check if component has power pin wired
-    const powerPin = comp.pins.find(p => p.supportedSignals.includes('POWER_3V3') || p.supportedSignals.includes('POWER_5V'));
-    if (powerPin) {
-      // If pin is battery input and project has a battery configured, it's powered by the battery bay
-      const isBatteryFed = powerPin.voltageDomain === 'VBAT' && (project.batteryCapacityMah || 0) > 0;
-      const pwrKey = `${comp.id}:${powerPin.id}`;
-      const conns = pinConnectionsCount.get(pwrKey);
-      if (!isBatteryFed && (!conns || conns.wires.length === 0)) {
-        issues.push({
-          severity: 'warning',
-          code: 'UNPOWERED_MODULE',
-          title: `Unconnected Power on "${comp.name}"`,
-          description: `Pin "${powerPin.name}" on "${comp.name}" is not connected to a 3.3V or 5V power supply rail.`,
-          involvedPinIds: [powerPin.id],
-          involvedComponentIds: [comp.id],
-          recommendation: `Connect to ${comp.operatingVoltage} power source.`
-        });
-      }
-    }
-  }
-
-  // Rule 4: UART TX/RX connection check (common user mistake: TX to TX instead of TX to RX)
-  for (const wire of project.wires) {
-    let fromSignal: PinSignalType[] = [];
-    let toSignal: PinSignalType[] = [];
-
-    if (wire.fromComponentId === 'mcu') {
-      const p = mcuPinMap.get(wire.fromPinId);
-      if (p) fromSignal = p.supportedSignals;
-    } else {
-      const p = compPinMap.get(`${wire.fromComponentId}:${wire.fromPinId}`);
-      if (p) fromSignal = p.pin.supportedSignals;
-    }
-
-    if (wire.toComponentId === 'mcu') {
-      const p = mcuPinMap.get(wire.toPinId);
-      if (p) toSignal = p.supportedSignals;
-    } else {
-      const p = compPinMap.get(`${wire.toComponentId}:${wire.toPinId}`);
-      if (p) toSignal = p.pin.supportedSignals;
-    }
-
-    if (fromSignal.includes('UART_TX') && toSignal.includes('UART_TX')) {
-      issues.push({
-        severity: 'error',
-        code: 'UART_TX_TX_COLLISION',
-        title: 'UART TX to TX Direct Link Detected',
-        description: `Wire ${wire.netName || wire.id} connects a TX output to another TX output. UART requires TX -> RX crossover.`,
-        involvedPinIds: [wire.fromPinId, wire.toPinId],
-        involvedComponentIds: [wire.fromComponentId, wire.toComponentId],
-        recommendation: 'Cross the connections: connect TX on device A to RX on device B, and RX on device A to TX on device B.'
-      });
-    }
-
-    // Voltage safety: 5V power connected to 3.3V GPIO
-    let fromPinObj: PinDefinition | undefined;
-    let toPinObj: PinDefinition | undefined;
-    if (wire.fromComponentId === 'mcu') fromPinObj = mcuPinMap.get(wire.fromPinId);
-    else fromPinObj = compPinMap.get(`${wire.fromComponentId}:${wire.fromPinId}`)?.pin;
-
-    if (wire.toComponentId === 'mcu') toPinObj = mcuPinMap.get(wire.toPinId);
-    else toPinObj = compPinMap.get(`${wire.toComponentId}:${wire.toPinId}`)?.pin;
-
-    const has5vRail = fromSignal.includes('POWER_5V') || toSignal.includes('POWER_5V');
-    const targetIs3v3Gpio =
-      (fromSignal.includes('GPIO') && fromPinObj?.voltageDomain === '3.3V') ||
-      (toSignal.includes('GPIO') && toPinObj?.voltageDomain === '3.3V');
-
-    if (has5vRail && targetIs3v3Gpio) {
-      issues.push({
-        severity: 'error',
-        code: 'OVERVOLTAGE_HAZARD',
-        title: '5V Connected to 3.3V GPIO Pin',
-        description: `A 5V power rail is shorted directly to a 3.3V GPIO pin. 3.3V logic devices will suffer permanent dielectric breakdown.`,
-        involvedPinIds: [wire.fromPinId, wire.toPinId],
-        involvedComponentIds: [wire.fromComponentId, wire.toComponentId],
-        recommendation: 'Never wire 5V directly to 3.3V GPIOs. Use a resistor voltage divider or logic level shifter (e.g. TXS0108E).'
-      });
-    }
-  }
+    });
+  });
 
   return issues;
+}
+
+/**
+ * Computes battery runtime estimate based on component power budgets,
+ * battery capacity, and active duty cycle percentage.
+ */
+export function calculatePowerBudget(project: DeviceProject): {
+  totalActiveMa: number;
+  totalSleepMa: number;
+  weightedAvgMa: number;
+  batteryLifeHours: number;
+  batteryLifeDays: number;
+} {
+  const mcuActive = project.mcu.activeCurrentMa;
+  const mcuSleep = project.mcu.idleCurrentMa;
+
+  let compActive = 0;
+  let compSleep = 0;
+
+  project.components.forEach((c) => {
+    compActive += c.activeCurrentMa;
+    compSleep += c.sleepCurrentMa;
+  });
+
+  const totalActiveMa = mcuActive + compActive;
+  const totalSleepMa = mcuSleep + compSleep;
+
+  const dutyCycle = Math.max(1, Math.min(100, project.activeDutyCyclePercent)) / 100.0;
+  const weightedAvgMa = totalActiveMa * dutyCycle + totalSleepMa * (1.0 - dutyCycle);
+
+  const capacity = project.batteryCapacityMah > 0 ? project.batteryCapacityMah : 2500;
+  const usableCapacity = capacity * 0.85; // 85% LDO/DCDC conversion efficiency
+
+  const batteryLifeHours = Math.round((usableCapacity / weightedAvgMa) * 10) / 10;
+  const batteryLifeDays = Math.round((batteryLifeHours / 24) * 10) / 10;
+
+  return {
+    totalActiveMa,
+    totalSleepMa,
+    weightedAvgMa: Math.round(weightedAvgMa * 10) / 10,
+    batteryLifeHours,
+    batteryLifeDays
+  };
 }

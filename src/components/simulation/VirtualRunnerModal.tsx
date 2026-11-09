@@ -18,8 +18,7 @@ import {
   Check,
   Radio,
   Sparkles,
-  ToggleLeft,
-  ToggleRight
+  Smartphone
 } from 'lucide-react';
 import {
   DeviceProject,
@@ -178,13 +177,13 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
     });
   };
 
-  // Handle Hardware Reset (EN pin pulse)
+  // Handle Hardware Reset
   const handleResetMcu = () => {
     onAddLog({
       id: `rst_${Date.now()}`,
       timestampMs: Date.now(),
       level: 'warn',
-      text: '[HARDWARE] EN (Reset) pin pulled LOW. Re-booting ESP32...'
+      text: '[HARDWARE] EN (Reset) pin pulled LOW. Re-booting MCU...'
     });
     const bootLogs = generateBootloaderLogs(project);
     bootLogs.forEach(onAddLog);
@@ -200,7 +199,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
     const textToSend = cmd || commandInput;
     if (!textToSend.trim()) return;
 
-    // Echo user input to terminal
     onAddLog({
       id: `tx_${Date.now()}`,
       timestampMs: Date.now(),
@@ -210,7 +208,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
 
     const { response, nextState } = processSerialCommand(textToSend, virtualState);
 
-    // Update state if command changed hardware
     if (Object.keys(nextState).length > 0) {
       onUpdateVirtualState({
         ...virtualState,
@@ -218,12 +215,11 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
       });
     }
 
-    // Print responses
     response.forEach((line) => {
       onAddLog({
         id: `rx_${Date.now()}_${Math.random()}`,
         timestampMs: Date.now(),
-        level: line.startsWith('ERROR') ? 'error' : 'rx',
+        level: line.startsWith('ERR') ? 'error' : 'rx',
         text: line
       });
     });
@@ -242,7 +238,7 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
   return (
     <div className="w-full h-full bg-[#070b13] text-slate-200 overflow-hidden flex flex-col p-4 md:p-6 space-y-4">
       {/* Top Simulation Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/95 border border-slate-800 p-3.5 rounded-2xl shadow-xl">
+      <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/95 border border-slate-800 p-3.5 rounded-2xl shadow-xl shrink-0">
         {/* Left: Execution Controls */}
         <div className="flex items-center gap-2">
           {virtualState.status !== 'running' ? (
@@ -256,7 +252,7 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
           ) : (
             <button
               onClick={handlePauseSimulation}
-              className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-md transition-all cursor-pointer"
+              className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-md transition-all cursor-pointer"
             >
               <Pause className="w-4 h-4" />
               <span>Pause</span>
@@ -275,14 +271,14 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
           <button
             onClick={handleResetMcu}
             className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold px-3 py-2 rounded-xl border border-slate-700 transition-colors cursor-pointer"
-            title="Simulate Hardware RST / EN Button"
+            title="Simulate Hardware RST Pin"
           >
             <RotateCcw className="w-4 h-4" />
             <span>Reset MCU</span>
           </button>
         </div>
 
-        {/* Center: Live Status Indicators */}
+        {/* Center: Status Indicators */}
         <div className="flex items-center gap-3 text-xs font-mono">
           <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
             <span
@@ -305,18 +301,18 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
           </div>
         </div>
 
-        {/* Right: Terminal Settings */}
+        {/* Right: Actions */}
         <div className="flex items-center gap-2 text-xs">
           <button
             onClick={handleCopyLogs}
-            className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors"
+            className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors cursor-pointer"
           >
             {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
             <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
           <button
             onClick={onClearLogs}
-            className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+            className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors cursor-pointer"
             title="Clear Serial Monitor"
           >
             <Trash2 className="w-4 h-4" />
@@ -324,15 +320,14 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
         </div>
       </div>
 
-      {/* Main Grid: Left = Serial Terminal, Right = Virtual Hardware Actuators */}
+      {/* Main Grid: Left = Serial Terminal Console, Right = Virtual Hardware Actuators */}
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Left: Interactive Serial Terminal Console (7 Cols) */}
+        {/* Left: Serial Terminal Console (7 Cols) */}
         <div className="lg:col-span-7 bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden">
-          {/* Terminal Title Bar */}
           <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 text-xs">
             <div className="flex items-center gap-2">
               <Terminal className="w-4 h-4 text-cyan-400" />
-              <span className="font-bold text-white tracking-tight">ESP32 UART0 Virtual Serial Monitor</span>
+              <span className="font-bold text-white tracking-tight">UART0 Virtual Serial Monitor</span>
               <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800">
                 115200 baud
               </span>
@@ -348,7 +343,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
             </label>
           </div>
 
-          {/* Terminal Scroll Stream */}
           <div className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-1 selection:bg-cyan-500 selection:text-black">
             {logs.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-slate-600 text-center space-y-2">
@@ -364,15 +358,15 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
                 let colorClass = 'text-slate-300';
                 if (log.level === 'boot') colorClass = 'text-amber-400 font-semibold';
                 if (log.level === 'info') colorClass = 'text-cyan-300';
-                if (log.level === 'warn') colorClass = 'text-yellow-400';
+                if (log.level === 'warn') colorClass = 'text-amber-300';
                 if (log.level === 'error') colorClass = 'text-rose-400 font-bold';
-                if (log.level === 'tx') colorClass = 'text-purple-300 font-bold';
-                if (log.level === 'rx') colorClass = 'text-emerald-300';
+                if (log.level === 'tx') colorClass = 'text-emerald-400';
+                if (log.level === 'rx') colorClass = 'text-white font-semibold';
 
                 return (
-                  <div key={log.id} className="flex items-start gap-2.5 hover:bg-slate-900/40 py-0.5 px-1 rounded">
-                    <span className="text-slate-600 shrink-0 select-none text-[10px]">[{time}]</span>
-                    <span className={`${colorClass} break-all whitespace-pre-wrap`}>{log.text}</span>
+                  <div key={log.id} className="flex gap-2.5">
+                    <span className="text-slate-600 select-none shrink-0">[{time}]</span>
+                    <span className={colorClass}>{log.text}</span>
                   </div>
                 );
               })
@@ -380,39 +374,24 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
             <div ref={terminalEndRef} />
           </div>
 
-          {/* Quick AT / Command Chips */}
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/60 border-t border-slate-800/80 overflow-x-auto text-[11px]">
-            <span className="text-slate-500 font-mono text-[10px] uppercase shrink-0">Quick Cmds:</span>
-            {['AT', 'AT+CSQ', 'AT+CBC', 'STATUS', 'RELAY1 ON', 'RELAY1 OFF', 'RGB #22c55e', 'HELP'].map((cmd) => (
-              <button
-                key={cmd}
-                onClick={() => handleSendCommand(cmd)}
-                className="px-2 py-0.5 rounded bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-300 font-mono text-[10px] transition-colors shrink-0"
-              >
-                {cmd}
-              </button>
-            ))}
-          </div>
-
-          {/* Interactive Command Input Form */}
+          {/* Interactive AT Command Input */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
               handleSendCommand();
             }}
-            className="flex items-center gap-2 p-3 bg-slate-900 border-t border-slate-800"
+            className="flex items-center gap-2 p-2.5 bg-slate-900 border-t border-slate-800"
           >
-            <span className="text-cyan-400 font-mono font-bold text-xs pl-1">{'>'}</span>
             <input
               type="text"
-              placeholder="Send UART serial string or AT command (e.g. AT, STATUS, RELAY1 ON)..."
               value={commandInput}
               onChange={(e) => setCommandInput(e.target.value)}
-              className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 font-mono outline-none focus:border-cyan-500"
+              placeholder="Send UART command (e.g., 'AT', 'STATUS', 'RELAY1 ON')..."
+              className="flex-1 bg-slate-950 border border-slate-800 text-slate-200 text-xs px-3 py-2 rounded-xl outline-none focus:border-cyan-500 font-mono"
             />
             <button
               type="submit"
-              className="flex items-center gap-1 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all cursor-pointer"
+              className="flex items-center gap-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-colors cursor-pointer"
             >
               <Send className="w-3.5 h-3.5" />
               <span>Send</span>
@@ -420,9 +399,9 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
           </form>
         </div>
 
-        {/* Right: Virtual Physical Hardware & Actuator HUD (5 Cols) */}
+        {/* Right: Virtual Physical Hardware & Actuators (5 Cols) */}
         <div className="lg:col-span-5 space-y-4 overflow-y-auto">
-          {/* Active Interactive Touchscreen Display Simulation */}
+          {/* Active Capacitive Touchscreen Display Simulation */}
           <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-4 shadow-xl space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-white flex items-center gap-1.5">
@@ -449,9 +428,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
                 className="w-full h-auto aspect-[4/3] cursor-pointer touch-none select-none block"
                 title="Tap or click anywhere to interact with embedded firmware apps"
               />
-              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/75 backdrop-blur px-2 py-1 rounded text-[10px] text-cyan-300 font-mono pointer-events-none">
-                Touch Interactive
-              </div>
             </div>
 
             {/* Firmware App Quick Switcher Pills */}
@@ -491,7 +467,7 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
             </div>
           </div>
 
-          {/* WS2812B NeoPixel 8-LED Strip Preview */}
+          {/* WS2812B NeoPixel 8-LED Preview */}
           <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-4 shadow-xl space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-white flex items-center gap-1.5">
@@ -500,7 +476,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
               </span>
               <span className="text-[10px] font-mono text-slate-400">GPIO 48</span>
             </div>
-            {/* Glowing LED row */}
             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-around gap-2">
               {virtualState.ws2812Colors.map((color, i) => (
                 <div key={i} className="flex flex-col items-center gap-1">
@@ -531,7 +506,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
             </div>
 
             <div className="grid grid-cols-2 gap-3 text-xs">
-              {/* Relay 1 */}
               <div
                 onClick={() =>
                   handleSendCommand(`RELAY1 ${virtualState.relays.ch1 ? 'OFF' : 'ON'}`)
@@ -545,7 +519,7 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
                 <div>
                   <span className="font-semibold block text-white">Relay Channel 1</span>
                   <span className="text-[10px] font-mono">
-                    {virtualState.relays.ch1 ? 'ENERGIZED (CLOSED)' : 'DE-ENERGIZED (OPEN)'}
+                    {virtualState.relays.ch1 ? 'CLOSED (ON)' : 'OPEN (OFF)'}
                   </span>
                 </div>
                 <div
@@ -555,7 +529,6 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
                 />
               </div>
 
-              {/* Relay 2 */}
               <div
                 onClick={() =>
                   handleSendCommand(`RELAY2 ${virtualState.relays.ch2 ? 'OFF' : 'ON'}`)
@@ -569,7 +542,7 @@ export const VirtualRunnerModal: React.FC<VirtualRunnerModalProps> = ({
                 <div>
                   <span className="font-semibold block text-white">Relay Channel 2</span>
                   <span className="text-[10px] font-mono">
-                    {virtualState.relays.ch2 ? 'ENERGIZED (CLOSED)' : 'DE-ENERGIZED (OPEN)'}
+                    {virtualState.relays.ch2 ? 'CLOSED (ON)' : 'OPEN (OFF)'}
                   </span>
                 </div>
                 <div
