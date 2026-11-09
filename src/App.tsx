@@ -1,20 +1,26 @@
 import React, { useState, useMemo } from 'react';
+import { Sparkles } from 'lucide-react';
 import { Header, ActiveTab } from './components/Header';
 import { SchematicCanvas } from './components/SchematicCanvas';
-import { Enclosure3DView } from './components/Enclosure3DView';
+import { RealDeviceViewer3D } from './components/3d/RealDeviceViewer3D';
 import { ElectricalInspector } from './components/ElectricalInspector';
-import { FirmwareModal } from './components/FirmwareModal';
+import { EnhancedCodeEditor } from './components/editor/EnhancedCodeEditor';
+import { VirtualRunnerModal } from './components/simulation/VirtualRunnerModal';
 import { BomModal } from './components/BomModal';
 import { ComponentPalette } from './components/ComponentPalette';
 import { MobileNav } from './components/MobileNav';
 import { PRESET_PROJECTS, MCU_BOARDS, MODULE_CATALOG } from './core/hardware-catalog';
 import { validateCircuit } from './core/pin-rules';
+import { generateFirmware } from './core/firmware-gen';
+import { createInitialHardwareState } from './core/esp-emulator';
 import {
   DeviceProject,
   DeviceEnclosureSpecs,
   WireConnection,
   ComponentModule,
-  McuFamily
+  McuFamily,
+  VirtualHardwareState,
+  SerialLogEntry
 } from './types/hardware';
 
 export default function App() {
@@ -30,8 +36,22 @@ export default function App() {
   // Active View Tab
   const [activeTab, setActiveTab] = useState<ActiveTab>('canvas');
 
+  // Focus mode: hide header, navigation and non-essential overlays
+  const [isUiHidden, setIsUiHidden] = useState(false);
+
   // Component Palette Modal
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+
+  // Live Firmware Code State
+  const [activeCode, setActiveCode] = useState<string>(() =>
+    generateFirmware(project, 'arduino')
+  );
+
+  // Virtual Hardware Execution State & Serial Logs
+  const [virtualState, setVirtualState] = useState<VirtualHardwareState>(() =>
+    createInitialHardwareState(project)
+  );
+  const [logs, setLogs] = useState<SerialLogEntry[]>([]);
 
   // Live DRC Circuit Validation
   const drcIssues = useMemo(() => validateCircuit(project), [project]);
@@ -46,23 +66,30 @@ export default function App() {
   const handleLoadPreset = (presetId: string) => {
     const found = PRESET_PROJECTS.find((p) => p.id === presetId);
     if (found) {
-      setProject(JSON.parse(JSON.stringify(found)));
+      const cloned: DeviceProject = JSON.parse(JSON.stringify(found));
+      setProject(cloned);
+      setActiveCode(generateFirmware(cloned, 'arduino'));
+      setVirtualState(createInitialHardwareState(cloned));
+      setLogs([]);
     }
   };
 
   // Handler: Change SoC MCU Board
   const handleChangeMcu = (family: McuFamily) => {
     const targetBoard = MCU_BOARDS.find((b) => b.family === family) || MCU_BOARDS[0];
-    setProject((prev) => ({
-      ...prev,
-      mcu: targetBoard,
-      // Retain existing wires where possible
-      wires: prev.wires.filter(
-        (w) =>
-          targetBoard.pins.some((p) => p.id === w.fromPinId || p.id === w.toPinId) ||
-          (w.fromComponentId !== 'mcu' && w.toComponentId !== 'mcu')
-      )
-    }));
+    setProject((prev) => {
+      const updated: DeviceProject = {
+        ...prev,
+        mcu: targetBoard,
+        wires: prev.wires.filter(
+          (w) =>
+            targetBoard.pins.some((p) => p.id === w.fromPinId || p.id === w.toPinId) ||
+            (w.fromComponentId !== 'mcu' && w.toComponentId !== 'mcu')
+        )
+      };
+      setVirtualState(createInitialHardwareState(updated));
+      return updated;
+    });
   };
 
   // Handler: Update Component Position on Canvas
@@ -70,6 +97,19 @@ export default function App() {
     setProject((prev) => ({
       ...prev,
       components: prev.components.map((c) => (c.id === componentId ? { ...c, x, y } : c))
+    }));
+  };
+
+  // Handler: Update Component Transform (position, rotation, scale)
+  const handleUpdateComponentTransform = (
+    componentId: string,
+    transform: { x?: number; y?: number; rotation?: number; scale?: number }
+  ) => {
+    setProject((prev) => ({
+      ...prev,
+      components: prev.components.map((c) =>
+        c.id === componentId ? { ...c, ...transform } : c
+      )
     }));
   };
 
@@ -193,24 +233,33 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[#070b12] text-slate-100 overflow-hidden font-sans">
       {/* Top Header */}
-      <Header
-        project={project}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onLoadPreset={handleLoadPreset}
-        onChangeMcu={handleChangeMcu}
-        onOpenAddModule={() => setIsPaletteOpen(true)}
-        onExportJson={handleExportJson}
-        onResetProject={handleResetProject}
-        issuesCount={issuesCount}
-      />
+      {!isUiHidden && (
+        <Header
+          project={project}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onLoadPreset={handleLoadPreset}
+          onChangeMcu={handleChangeMcu}
+          onOpenAddModule={() => setIsPaletteOpen(true)}
+          onExportJson={handleExportJson}
+          onResetProject={handleResetProject}
+          onToggleUi={() => setIsUiHidden(true)}
+          issuesCount={issuesCount}
+        />
+      )}
 
       {/* Main View Area */}
-      <main className="flex-1 relative overflow-hidden pb-14 lg:pb-0">
+      <main
+        className={`flex-1 relative overflow-hidden transition-[padding] duration-300 ${
+          isUiHidden ? 'pb-0' : 'pb-14 lg:pb-0'
+        }`}
+      >
         {activeTab === 'canvas' && (
           <SchematicCanvas
             project={project}
+            uiHidden={isUiHidden}
             onUpdateComponentPosition={handleUpdateComponentPosition}
+            onUpdateComponentTransform={handleUpdateComponentTransform}
             onAddWire={handleAddWire}
             onDeleteWire={handleDeleteWire}
             onRemoveComponent={handleRemoveComponent}
@@ -218,9 +267,14 @@ export default function App() {
         )}
 
         {activeTab === 'enclosure' && (
-          <Enclosure3DView
+          <RealDeviceViewer3D
             project={project}
             onUpdateEnclosure={handleUpdateEnclosure}
+            virtualState={virtualState}
+            onUpdateVirtualState={setVirtualState}
+            onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
+            uiHidden={isUiHidden}
+            onToggleUi={() => setIsUiHidden(true)}
           />
         )}
 
@@ -233,17 +287,51 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'firmware' && <FirmwareModal project={project} />}
+        {activeTab === 'firmware' && (
+          <EnhancedCodeEditor
+            project={project}
+            code={activeCode}
+            onChangeCode={setActiveCode}
+            onRunCode={() => setActiveTab('emulator')}
+          />
+        )}
+
+        {activeTab === 'emulator' && (
+          <VirtualRunnerModal
+            project={project}
+            activeCode={activeCode}
+            virtualState={virtualState}
+            onUpdateVirtualState={setVirtualState}
+            logs={logs}
+            onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
+            onClearLogs={() => setLogs([])}
+          />
+        )}
 
         {activeTab === 'bom' && <BomModal project={project} />}
       </main>
 
       {/* Mobile Bottom Navigation Bar */}
-      <MobileNav
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        issuesCount={issuesCount}
-      />
+      {!isUiHidden && (
+        <MobileNav
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          issuesCount={issuesCount}
+        />
+      )}
+
+      {/* Focus-mode restore affordance */}
+      {isUiHidden && (
+        <button
+          onClick={() => setIsUiHidden(false)}
+          className="fixed top-3 right-3 z-[70] flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-xl border border-cyan-500/50 text-cyan-300 hover:text-white text-xs font-bold px-3 py-2 rounded-xl shadow-2xl shadow-cyan-950/50 cursor-pointer"
+          title="Show header and navigation"
+          aria-label="Show UI chrome"
+        >
+          <Sparkles className="w-4 h-4" />
+          Show UI
+        </button>
+      )}
 
       {/* Hardware Component Palette Modal */}
       <ComponentPalette

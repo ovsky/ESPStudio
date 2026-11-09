@@ -2,11 +2,26 @@
  * Hardware, Pinout, Wiring & Project Types for ESP-Forge Studio
  */
 
-export type McuFamily = 'ESP32-S3' | 'ESP32-P4' | 'ESP32-C6' | 'ESP32-C3' | 'ESP32-Classic';
+export type McuFamily =
+  | 'ESP32-S3'
+  | 'ESP32-P4'
+  | 'ESP32-C6'
+  | 'ESP32-C5'
+  | 'ESP32-C3'
+  | 'ESP32-S2'
+  | 'ESP32-Classic'
+  | 'Arduino-Uno-R4'
+  | 'Arduino-Giga-R1'
+  | 'Radxa-Zero-3W'
+  | 'Radxa-Rock-5B'
+  | 'Raspberry-Pi-Pico-2';
+
+export type BoardCategory = 'mcu' | 'sbc' | 'hybrid';
 
 export type PinSignalType =
   | 'POWER_3V3'
   | 'POWER_5V'
+  | 'POWER_VIN'
   | 'GND'
   | 'GPIO'
   | 'ADC'
@@ -25,6 +40,9 @@ export type PinSignalType =
   | 'MIPI_DSI'
   | 'MIPI_CSI'
   | 'DVP_CAM'
+  | 'HDMI'
+  | 'CAN_TX'
+  | 'CAN_RX'
   | 'STRAP'
   | 'TOUCH'
   | 'PWM';
@@ -47,6 +65,8 @@ export interface McuBoardSpec {
   id: string;
   name: string;
   family: McuFamily;
+  category?: BoardCategory;
+  operatingSystem?: string;
   tagline: string;
   cpuArchitecture: string;
   clockSpeedMhz: number;
@@ -85,7 +105,49 @@ export interface ComponentModule {
   y: number;
   width?: number;
   height?: number;
+  rotation?: number; // 0, 90, 180, 270 degrees
+  scale?: number; // 0.5 to 2.5 multiplier
   estimatedCostUsd: number;
+}
+
+export type SimulationStatus = 'stopped' | 'compiling' | 'running' | 'paused' | 'error';
+
+export interface SerialLogEntry {
+  id: string;
+  timestampMs: number;
+  level: 'boot' | 'info' | 'warn' | 'error' | 'rx' | 'tx';
+  text: string;
+}
+
+export interface VirtualHardwareState {
+  status: SimulationStatus;
+  uptimeSeconds: number;
+  freeHeapBytes: number;
+  activeFrequencyMhz: number;
+  gpioStates: Record<number, { level: 'HIGH' | 'LOW'; pwm: number; mode: 'INPUT' | 'OUTPUT' }>;
+  ws2812Colors: string[]; // 8 or 64 RGB hex colors
+  relays: { ch1: boolean; ch2: boolean };
+  displayLines: string[];
+  sensorReadings: {
+    temperatureC: number;
+    humidityPercent: number;
+    pressureHpa: number;
+    vocKohm: number;
+  };
+  rotaryEncoderPos: number;
+  modemConnected: boolean;
+  batteryMillivolts: number;
+  touchScreenState: {
+    activeApp: 'launcher' | 'phone' | 'matrix' | 'sensor' | 'vision' | 'terminal';
+    touchPressed: boolean;
+    lastTouchX: number;
+    lastTouchY: number;
+    phoneDialBuffer: string;
+    lightMatrixMode: 'solid' | 'neon' | 'aurora' | 'rainbow' | 'strobe';
+    lightBrightness: number;
+    selectedLightColor: string;
+    cameraObjectDetected?: string;
+  };
 }
 
 export type WireType =
