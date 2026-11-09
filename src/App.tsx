@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Sparkles } from 'lucide-react';
+import { ChevronUp } from 'lucide-react';
 import { Header, ActiveTab } from './components/Header';
 import { SchematicCanvas } from './components/SchematicCanvas';
 import { RealDeviceViewer3D } from './components/3d/RealDeviceViewer3D';
@@ -36,8 +36,8 @@ export default function App() {
   // Active View Tab
   const [activeTab, setActiveTab] = useState<ActiveTab>('canvas');
 
-  // Focus mode: hide header, navigation and non-essential overlays
-  const [isUiHidden, setIsUiHidden] = useState(false);
+  // Zen Mode for Fullscreen Mobile Canvas / 3D
+  const [isZenMode, setIsZenMode] = useState(false);
 
   // Component Palette Modal
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
@@ -232,8 +232,8 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#070b12] text-slate-100 overflow-hidden font-sans">
-      {/* Top Header */}
-      {!isUiHidden && (
+      {/* Top Header (Hideable in Zen Mode) */}
+      {!isZenMode && (
         <Header
           project={project}
           activeTab={activeTab}
@@ -243,21 +243,17 @@ export default function App() {
           onOpenAddModule={() => setIsPaletteOpen(true)}
           onExportJson={handleExportJson}
           onResetProject={handleResetProject}
-          onToggleUi={() => setIsUiHidden(true)}
           issuesCount={issuesCount}
+          isZenMode={isZenMode}
+          onToggleZenMode={() => setIsZenMode(!isZenMode)}
         />
       )}
 
-      {/* Main View Area */}
-      <main
-        className={`flex-1 relative overflow-hidden transition-[padding] duration-300 ${
-          isUiHidden ? 'pb-0' : 'pb-14 lg:pb-0'
-        }`}
-      >
+      {/* Main View Area (Full screen in Zen Mode) */}
+      <main className={`flex-1 relative overflow-hidden ${isZenMode ? 'pb-0' : 'pb-14 lg:pb-0'}`}>
         {activeTab === 'canvas' && (
           <SchematicCanvas
             project={project}
-            uiHidden={isUiHidden}
             onUpdateComponentPosition={handleUpdateComponentPosition}
             onUpdateComponentTransform={handleUpdateComponentTransform}
             onAddWire={handleAddWire}
@@ -270,11 +266,11 @@ export default function App() {
           <RealDeviceViewer3D
             project={project}
             onUpdateEnclosure={handleUpdateEnclosure}
+            onUpdateComponentTransform={handleUpdateComponentTransform}
+            onRemoveComponent={handleRemoveComponent}
             virtualState={virtualState}
             onUpdateVirtualState={setVirtualState}
             onAddLog={(entry) => setLogs((prev) => [...prev, entry])}
-            uiHidden={isUiHidden}
-            onToggleUi={() => setIsUiHidden(true)}
           />
         )}
 
@@ -311,8 +307,8 @@ export default function App() {
         {activeTab === 'bom' && <BomModal project={project} />}
       </main>
 
-      {/* Mobile Bottom Navigation Bar */}
-      {!isUiHidden && (
+      {/* Mobile Bottom Navigation Bar (Hideable in Zen Mode) */}
+      {!isZenMode && (
         <MobileNav
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -320,17 +316,18 @@ export default function App() {
         />
       )}
 
-      {/* Focus-mode restore affordance */}
-      {isUiHidden && (
-        <button
-          onClick={() => setIsUiHidden(false)}
-          className="fixed top-3 right-3 z-[70] flex items-center gap-1.5 bg-slate-900/90 backdrop-blur-xl border border-cyan-500/50 text-cyan-300 hover:text-white text-xs font-bold px-3 py-2 rounded-xl shadow-2xl shadow-cyan-950/50 cursor-pointer"
-          title="Show header and navigation"
-          aria-label="Show UI chrome"
-        >
-          <Sparkles className="w-4 h-4" />
-          Show UI
-        </button>
+      {/* Zen Mode Floating Restore Button */}
+      {isZenMode && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50">
+          <button
+            onClick={() => setIsZenMode(false)}
+            className="flex items-center gap-1.5 bg-slate-900/95 border border-cyan-500/60 text-cyan-300 hover:text-white px-4 py-2 rounded-full shadow-2xl text-xs font-semibold backdrop-blur cursor-pointer transition-all hover:scale-105 active:scale-95"
+            title="Open Navigation & Windows"
+          >
+            <ChevronUp className="w-4 h-4 text-cyan-400" />
+            <span>Show Navigation & Windows</span>
+          </button>
+        </div>
       )}
 
       {/* Hardware Component Palette Modal */}
