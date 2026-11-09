@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ZoomIn,
   ZoomOut,
@@ -15,7 +15,12 @@ import {
   RotateCw,
   Grid,
   Move,
-  Maximize2
+  Maximize2,
+  Eye,
+  EyeOff,
+  ChevronDown,
+  ChevronUp,
+  Focus
 } from 'lucide-react';
 import {
   DeviceProject,
@@ -28,7 +33,6 @@ import {
 
 interface SchematicCanvasProps {
   project: DeviceProject;
-  uiHidden?: boolean;
   onUpdateComponentPosition: (componentId: string, x: number, y: number) => void;
   onUpdateComponentTransform?: (
     componentId: string,
@@ -49,7 +53,6 @@ interface PendingWireConnection {
 
 export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   project,
-  uiHidden = false,
   onUpdateComponentPosition,
   onUpdateComponentTransform,
   onAddWire,
@@ -58,12 +61,28 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Pan & Zoom (state mirrors refs so pointer gestures never read stale values)
-  const [zoom, setZoomState] = useState(1.0);
-  const [pan, setPanState] = useState({ x: 40, y: 30 });
-  const zoomRef = useRef(1.0);
-  const panRef = useRef({ x: 40, y: 30 });
+  // Pan & Zoom
+  const [zoom, setZoom] = useState(1.0);
+  const [pan, setPan] = useState({ x: 40, y: 30 });
   const [isPanning, setIsPanning] = useState(false);
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 });
+
+  // Touch gesture state
+  const touchStateRef = useRef<{
+    isTouchDragging: boolean;
+    touchId: number | null;
+    initialDistance: number | null;
+    initialZoom: number;
+    initialPan: { x: number; y: number };
+    midpoint: { x: number; y: number };
+  }>({
+    isTouchDragging: false,
+    touchId: null,
+    initialDistance: null,
+    initialZoom: 1.0,
+    initialPan: { x: 40, y: 30 },
+    midpoint: { x: 0, y: 0 }
+  });
 
   // Grid Snapping
   const [snapToGrid, setSnapToGrid] = useState(false);
@@ -71,35 +90,14 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   // Selected Component & Transformation
   const [selectedCompId, setSelectedCompId] = useState<string | null>(null);
 
-  // Drag / gesture state
+  // Dragging Component
   const [draggingCompId, setDraggingCompId] = useState<string | null>(null);
-  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const gestureRef = useRef<
-    | {
-        mode: 'pan';
-        startClient: { x: number; y: number };
-        startPan: { x: number; y: number };
-      }
-    | {
-        mode: 'drag' | 'drag-mcu';
-        compId?: string;
-        offset: { x: number; y: number };
-      }
-    | {
-        mode: 'pinch';
-        startDist: number;
-        startZoom: number;
-        anchorWorld: { x: number; y: number };
-      }
-    | {
-        mode: 'scale';
-        compId: string;
-        centerWorld: { x: number; y: number };
-        startDist: number;
-        startScale: number;
-      }
-    | null
-  >(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  // Resizing Component via corner handle
+  const [resizingCompId, setResizingCompId] = useState<string | null>(null);
+  const [initialResizeDist, setInitialResizeDist] = useState<number>(0);
+  const [initialResizeScale, setInitialResizeScale] = useState<number>(1.0);
 
   // Wire Connection Mode
   const [pendingWire, setPendingWire] = useState<PendingWireConnection | null>(null);
@@ -107,6 +105,9 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
   // Selected Wire
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
+
+  // Zen Mode (Hide Toolbars for Fullscreen Mobile Drawing)
+  const [isZenMode, setIsZenMode] = useState(false);
 
   // Pin hover tooltip
   const [hoveredPin, setHoveredPin] = useState<{
@@ -116,10 +117,8 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     y: number;
   } | null>(null);
 
-  // MCU board position is now fully draggable on the canvas
-  const [mcuPos, setMcuPos] = useState({ x: 70, y: 60 });
-  const mcuPosRef = useRef(mcuPos);
-  mcuPosRef.current = mcuPos;
+  // Fixed MCU board position on canvas
+  const mcuPos = { x: 70, y: 60 };
 
   // Calculate pin world coordinates with rotation & scaling support
   const getPinCoordinate = (componentId: string, pinId: string): { x: number; y: number } => {
@@ -127,7 +126,6 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
       const pin = project.mcu.pins.find((p) => p.id === pinId);
       if (!pin) return { x: mcuPos.x + 140, y: mcuPos.y + 100 };
       const isLeft = pin.side === 'left';
-      // MCU dimensions: width 280, height ~ 600
       const x = isLeft ? mcuPos.x : mcuPos.x + 280;
       const y = mcuPos.y + 70 + (pin.order - 1) * 26;
       return { x, y };
@@ -149,7 +147,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     const localX = isLeft ? 0 : compWidth;
     const localY = 55 + (pin.order - 1) * 26;
 
-    // Component Center in world coordinates
+    // Center in world coordinates
     const cx = comp.x + compWidth / 2;
     const cy = comp.y + compHeight / 2;
 
@@ -163,254 +161,222 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
     return { x, y };
   };
 
-  const clampZoom = (value: number) => Math.min(2.5, Math.max(0.3, value));
-
-  const applyView = (nextZoom: number, nextPan: { x: number; y: number }) => {
-    zoomRef.current = nextZoom;
-    panRef.current = nextPan;
-    setZoomState(nextZoom);
-    setPanState(nextPan);
-  };
-
-  const getLocalPoint = (clientX: number, clientY: number) => {
-    const el = containerRef.current;
-    if (!el) return { x: 0, y: 0 };
-    const rect = el.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  };
-
-  const localToWorld = (local: { x: number; y: number }) => ({
-    x: (local.x - panRef.current.x) / zoomRef.current,
-    y: (local.y - panRef.current.y) / zoomRef.current
-  });
-
-  const zoomAtPoint = (local: { x: number; y: number }, requestedZoom: number) => {
-    const nextZoom = clampZoom(requestedZoom);
-    const world = localToWorld(local);
-    applyView(nextZoom, {
-      x: local.x - world.x * nextZoom,
-      y: local.y - world.y * nextZoom
-    });
-  };
-
-  const zoomByFactor = (factor: number) => {
-    const el = containerRef.current;
-    if (!el) return;
-    zoomAtPoint(
-      { x: el.clientWidth / 2, y: el.clientHeight / 2 },
-      zoomRef.current * factor
-    );
-  };
-
-  const resetView = () => {
-    applyView(1.0, { x: 40, y: 30 });
-  };
-
-  // Native non-passive wheel listener: trackpad pinch + wheel zoom anchored at cursor
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handleWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const local = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      const factor = Math.exp(-event.deltaY * 0.0016);
-      zoomAtPoint(local, zoomRef.current * factor);
+  // Convert mouse / pointer event to canvas world coordinates
+  const getCanvasCoords = useCallback((clientX: number, clientY: number) => {
+    if (!containerRef.current) return { x: 0, y: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom
     };
-    el.addEventListener('wheel', handleWheel, { passive: false });
-    return () => el.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, [pan.x, pan.y, zoom]);
 
-  const snapValue = (value: number) => (snapToGrid ? Math.round(value / 20) * 20 : value);
-
-  const handlePointerDown = (event: React.PointerEvent) => {
-    const target = event.target as HTMLElement;
-    const scaleHandle = target.closest('[data-scale-handle]') as HTMLElement | null;
-
-    // Interactive controls and pins keep their native click behaviour.
-    if (!scaleHandle) {
-      if (target.closest('button') || target.closest('input') || target.closest('select') || target.closest('[data-pin]')) {
-        return;
-      }
-      if (target.closest('[data-wire]')) {
-        return;
-      }
-    }
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-
+  // Mouse Wheel Smooth Zoom towards cursor
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
     const container = containerRef.current;
     if (!container) return;
-    container.setPointerCapture(event.pointerId);
-    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
 
-    const local = getLocalPoint(event.clientX, event.clientY);
-    const world = localToWorld(local);
-    setMousePos(world);
+    const factor = e.deltaY < 0 ? 1.12 : 0.89;
+    const newZoom = Math.min(2.5, Math.max(0.35, zoom * factor));
+    const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
+    const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
 
-    if (activePointersRef.current.size === 1) {
-      if (scaleHandle && selectedCompId) {
-        const comp = project.components.find((item) => item.id === selectedCompId);
-        if (comp) {
-          const compWidth = comp.width || 240;
-          const compHeight = comp.height || 60 + Math.max(comp.pins.length / 2, 2) * 26;
-          const centerWorld = {
-            x: comp.x + compWidth / 2,
-            y: comp.y + compHeight / 2
-          };
-          gestureRef.current = {
-            mode: 'scale',
-            compId: comp.id,
-            centerWorld,
-            startDist: Math.max(8, Math.hypot(world.x - centerWorld.x, world.y - centerWorld.y)),
-            startScale: comp.scale || 1.0
-          };
-        }
-        return;
-      }
+    setZoom(newZoom);
+    setPan({ x: newPanX, y: newPanY });
+  };
 
-      const compEl = target.closest('[data-component-id]') as HTMLElement | null;
-      const mcuEl = target.closest('[data-mcu]') as HTMLElement | null;
+  // Mouse Move handling
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const coords = getCanvasCoords(e.clientX, e.clientY);
+    setMousePos(coords);
 
-      if (compEl?.dataset.componentId) {
-        const compId = compEl.dataset.componentId;
-        const comp = project.components.find((item) => item.id === compId);
-        if (comp) {
-          setSelectedCompId(compId);
-          setSelectedWireId(null);
-          setDraggingCompId(compId);
-          gestureRef.current = {
-            mode: 'drag',
-            compId,
-            offset: { x: world.x - comp.x, y: world.y - comp.y }
-          };
-        }
-      } else if (mcuEl) {
-        setSelectedCompId(null);
-        setSelectedWireId(null);
-        setDraggingCompId('mcu');
-        gestureRef.current = {
-          mode: 'drag-mcu',
-          offset: { x: world.x - mcuPosRef.current.x, y: world.y - mcuPosRef.current.y }
-        };
-      } else {
-        setIsPanning(true);
-        setSelectedCompId(null);
-        setSelectedWireId(null);
-        gestureRef.current = {
-          mode: 'pan',
-          startClient: { x: event.clientX, y: event.clientY },
-          startPan: { ...panRef.current }
-        };
-      }
+    if (isPanning) {
+      setPan({
+        x: e.clientX - startPan.x,
+        y: e.clientY - startPan.y
+      });
       return;
     }
 
-    if (activePointersRef.current.size === 2) {
-      const points = Array.from(activePointersRef.current.values());
-      const [a, b] = points;
-      const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const localMid = getLocalPoint(midClient.x, midClient.y);
-      gestureRef.current = {
-        mode: 'pinch',
-        startDist: Math.max(8, Math.hypot(a.x - b.x, a.y - b.y)),
-        startZoom: zoomRef.current,
-        anchorWorld: localToWorld(localMid)
-      };
-      setIsPanning(false);
-      setDraggingCompId(null);
+    if (draggingCompId) {
+      let newX = coords.x - dragOffset.x;
+      let newY = coords.y - dragOffset.y;
+      if (snapToGrid) {
+        newX = Math.round(newX / 20) * 20;
+        newY = Math.round(newY / 20) * 20;
+      }
+      onUpdateComponentPosition(draggingCompId, Math.max(340, Math.round(newX)), Math.max(10, Math.round(newY)));
+    } else if (resizingCompId) {
+      const comp = project.components.find((c) => c.id === resizingCompId);
+      if (comp) {
+        const compWidth = comp.width || 240;
+        const compHeight = comp.height || 120;
+        const centerX = comp.x + compWidth / 2;
+        const centerY = comp.y + compHeight / 2;
+        const currentDist = Math.hypot(coords.x - centerX, coords.y - centerY);
+        if (initialResizeDist > 0) {
+          const ratio = currentDist / initialResizeDist;
+          const nextScale = Math.min(2.2, Math.max(0.6, initialResizeScale * ratio));
+          onUpdateComponentTransform?.(resizingCompId, { scale: Math.round(nextScale * 10) / 10 });
+        }
+      }
     }
   };
 
-  const handlePointerMove = (event: React.PointerEvent) => {
-    const world = localToWorld(getLocalPoint(event.clientX, event.clientY));
-    setMousePos(world);
-
-    if (!activePointersRef.current.has(event.pointerId)) return;
-    activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-
-    const gesture = gestureRef.current;
-    if (!gesture) return;
-
-    if (gesture.mode === 'pinch') {
-      if (activePointersRef.current.size < 2) return;
-      const points = Array.from(activePointersRef.current.values());
-      const [a, b] = points;
-      const midClient = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const localMid = getLocalPoint(midClient.x, midClient.y);
-      const nextZoom = clampZoom(
-        gesture.startZoom * (Math.hypot(a.x - b.x, a.y - b.y) / gesture.startDist)
-      );
-      applyView(nextZoom, {
-        x: localMid.x - gesture.anchorWorld.x * nextZoom,
-        y: localMid.y - gesture.anchorWorld.y * nextZoom
-      });
-      return;
-    }
-
-    if (gesture.mode === 'pan') {
-      applyView(zoomRef.current, {
-        x: gesture.startPan.x + (event.clientX - gesture.startClient.x),
-        y: gesture.startPan.y + (event.clientY - gesture.startClient.y)
-      });
-      return;
-    }
-
-    if (gesture.mode === 'drag' && gesture.compId) {
-      const nextX = snapValue(world.x - gesture.offset.x);
-      const nextY = snapValue(world.y - gesture.offset.y);
-      onUpdateComponentPosition(
-        gesture.compId,
-        Math.max(-200, Math.round(nextX)),
-        Math.max(-200, Math.round(nextY))
-      );
-      return;
-    }
-
-    if (gesture.mode === 'drag-mcu') {
-      const nextX = snapValue(world.x - gesture.offset.x);
-      const nextY = snapValue(world.y - gesture.offset.y);
-      setMcuPos({
-        x: Math.max(0, Math.round(nextX)),
-        y: Math.max(-200, Math.round(nextY))
-      });
-      return;
-    }
-
-    if (gesture.mode === 'scale') {
-      const distance = Math.hypot(
-        world.x - gesture.centerWorld.x,
-        world.y - gesture.centerWorld.y
-      );
-      const nextScale = Math.min(
-        2.6,
-        Math.max(0.4, gesture.startScale * (distance / gesture.startDist))
-      );
-      onUpdateComponentTransform?.(gesture.compId, { scale: nextScale });
+  const handleMouseDown = (e: React.MouseEvent) => {
+    // Only pan if clicking on empty background
+    if (e.target === containerRef.current || (e.target as HTMLElement).tagName === 'svg') {
+      setIsPanning(true);
+      setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      setSelectedWireId(null);
+      setSelectedCompId(null);
     }
   };
 
-  const endPointerGesture = (event: React.PointerEvent) => {
-    activePointersRef.current.delete(event.pointerId);
-    if (containerRef.current?.hasPointerCapture(event.pointerId)) {
-      containerRef.current.releasePointerCapture(event.pointerId);
-    }
-
-    if (activePointersRef.current.size === 0) {
-      gestureRef.current = null;
-      setIsPanning(false);
-      setDraggingCompId(null);
-      return;
-    }
-
-    // Keep the remaining finger usable as a one-finger pan.
-    const remaining = Array.from(activePointersRef.current.values())[0];
-    gestureRef.current = {
-      mode: 'pan',
-      startClient: { x: remaining.x, y: remaining.y },
-      startPan: { ...panRef.current }
-    };
-    setIsPanning(true);
+  const handleMouseUp = () => {
+    setIsPanning(false);
     setDraggingCompId(null);
+    setResizingCompId(null);
+  };
+
+  // Touch Event Handlers for Mobile Gesture Control
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const target = touch.target as HTMLElement;
+      const compElement = target.closest('[data-component-id]') as HTMLElement | null;
+
+      if (compElement) {
+        // Touch on a component card
+        const compId = compElement.dataset.componentId!;
+        const comp = project.components.find((c) => c.id === compId);
+        if (comp) {
+          const coords = getCanvasCoords(touch.clientX, touch.clientY);
+          setSelectedCompId(compId);
+          setDraggingCompId(compId);
+          setDragOffset({ x: coords.x - comp.x, y: coords.y - comp.y });
+          touchStateRef.current.isTouchDragging = true;
+          touchStateRef.current.touchId = touch.identifier;
+          return;
+        }
+      }
+
+      // Touch on background -> Start Canvas Pan
+      setIsPanning(true);
+      setStartPan({ x: touch.clientX - pan.x, y: touch.clientY - pan.y });
+      setSelectedWireId(null);
+      setSelectedCompId(null);
+    } else if (e.touches.length === 2) {
+      // 2 Fingers -> Start Pinch-to-Zoom
+      setIsPanning(false);
+      setDraggingCompId(null);
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const midX = (t1.clientX + t2.clientX) / 2;
+      const midY = (t1.clientY + t2.clientY) / 2;
+
+      touchStateRef.current = {
+        isTouchDragging: false,
+        touchId: null,
+        initialDistance: dist,
+        initialZoom: zoom,
+        initialPan: { ...pan },
+        midpoint: { x: midX, y: midY }
+      };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const coords = getCanvasCoords(touch.clientX, touch.clientY);
+      setMousePos(coords);
+
+      if (draggingCompId) {
+        let newX = coords.x - dragOffset.x;
+        let newY = coords.y - dragOffset.y;
+        if (snapToGrid) {
+          newX = Math.round(newX / 20) * 20;
+          newY = Math.round(newY / 20) * 20;
+        }
+        onUpdateComponentPosition(draggingCompId, Math.max(340, Math.round(newX)), Math.max(10, Math.round(newY)));
+      } else if (isPanning) {
+        setPan({
+          x: touch.clientX - startPan.x,
+          y: touch.clientY - startPan.y
+        });
+      }
+    } else if (e.touches.length === 2 && touchStateRef.current.initialDistance) {
+      // Pinch-to-zoom calculation
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const currentMidX = (t1.clientX + t2.clientX) / 2;
+      const currentMidY = (t1.clientY + t2.clientY) / 2;
+
+      const scaleFactor = dist / touchStateRef.current.initialDistance;
+      const newZoom = Math.min(2.5, Math.max(0.35, touchStateRef.current.initialZoom * scaleFactor));
+
+      const container = containerRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const midRelX = touchStateRef.current.midpoint.x - rect.left;
+        const midRelY = touchStateRef.current.midpoint.y - rect.top;
+
+        const newPanX = currentMidX - rect.left - (midRelX - touchStateRef.current.initialPan.x) * (newZoom / touchStateRef.current.initialZoom);
+        const newPanY = currentMidY - rect.top - (midRelY - touchStateRef.current.initialPan.y) * (newZoom / touchStateRef.current.initialZoom);
+
+        setZoom(newZoom);
+        setPan({ x: newPanX, y: newPanY });
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    setIsPanning(false);
+    setDraggingCompId(null);
+    setResizingCompId(null);
+    touchStateRef.current.initialDistance = null;
+    touchStateRef.current.isTouchDragging = false;
+  };
+
+  // Fit All Elements into Screen Viewport
+  const handleFitAllToScreen = () => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+
+    let minX = mcuPos.x;
+    let maxX = mcuPos.x + 280;
+    let minY = mcuPos.y;
+    let maxY = mcuPos.y + 600;
+
+    project.components.forEach((c) => {
+      const w = c.width || 240;
+      const h = c.height || 180;
+      minX = Math.min(minX, c.x);
+      maxX = Math.max(maxX, c.x + w);
+      minY = Math.min(minY, c.y);
+      maxY = Math.max(maxY, c.y + h);
+    });
+
+    const contentWidth = maxX - minX + 80;
+    const contentHeight = maxY - minY + 80;
+
+    const zoomX = rect.width / contentWidth;
+    const zoomY = rect.height / contentHeight;
+    const targetZoom = Math.min(1.4, Math.max(0.45, Math.min(zoomX, zoomY) * 0.9));
+
+    const targetPanX = (rect.width - contentWidth * targetZoom) / 2 - minX * targetZoom + 40 * targetZoom;
+    const targetPanY = (rect.height - contentHeight * targetZoom) / 2 - minY * targetZoom + 40 * targetZoom;
+
+    setZoom(targetZoom);
+    setPan({ x: targetPanX, y: targetPanY });
   };
 
   // Auto-detect wire type & color
@@ -455,12 +421,11 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   const handlePinClick = (
     componentId: string,
     pin: PinDefinition,
-    e: React.MouseEvent
+    e: React.MouseEvent | React.TouchEvent
   ) => {
     e.stopPropagation();
 
     if (!pendingWire) {
-      // Start wire
       const pinCoords = getPinCoordinate(componentId, pin.id);
       setPendingWire({
         fromComponentId: componentId,
@@ -470,13 +435,11 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
         fromY: pinCoords.y
       });
     } else {
-      // Finish wire if not same pin
       if (pendingWire.fromComponentId === componentId && pendingWire.fromPinId === pin.id) {
         setPendingWire(null);
         return;
       }
 
-      // Find fromPin definition
       let fromPin: PinDefinition | undefined;
       if (pendingWire.fromComponentId === 'mcu') {
         fromPin = project.mcu.pins.find((p) => p.id === pendingWire.fromPinId);
@@ -521,79 +484,104 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
   return (
     <div
       ref={containerRef}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={endPointerGesture}
-      onPointerCancel={endPointerGesture}
-      className={`relative w-full h-full bg-[#070b12] overflow-hidden select-none touch-none ${
-        isPanning ? 'cursor-grabbing' : draggingCompId ? 'cursor-move' : 'cursor-crosshair'
-      } ${uiHidden ? 'ui-hidden' : ''}`}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      className="relative w-full h-full bg-[#070b12] overflow-hidden select-none cursor-crosshair touch-none"
       style={{
         backgroundImage: `
-          radial-gradient(circle at 1px 1px, rgba(56, 189, 248, 0.10) 1px, transparent 0),
-          linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-          linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px)
+          radial-gradient(circle at 1px 1px, rgba(56, 189, 248, 0.08) 1px, transparent 0),
+          linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px)
         `,
-        backgroundSize: `${24 * zoom}px ${24 * zoom}px, ${120 * zoom}px ${120 * zoom}px, ${120 * zoom}px ${120 * zoom}px`,
-        backgroundPosition: `${pan.x}px ${pan.y}px`
+        backgroundSize: '24px 24px, 120px 120px, 120px 120px'
       }}
     >
-      {/* Floating Canvas Controls */}
-      <div data-ui-overlay className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 p-1 rounded-lg shadow-xl text-slate-300">
+      {/* Floating Canvas Controls (Hideable in Zen Mode) */}
+      {!isZenMode && (
+        <div className="absolute top-4 left-4 z-30 flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 p-1.5 rounded-xl shadow-xl text-slate-300">
+          <button
+            onClick={() => setZoom((z) => Math.min(2.5, z + 0.15))}
+            className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200 cursor-pointer"
+            title="Zoom In (or Wheel Up / Pinch)"
+            aria-label="Zoom In"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setZoom((z) => Math.max(0.35, z - 0.15))}
+            className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200 cursor-pointer"
+            title="Zoom Out (or Wheel Down / Pinch)"
+            aria-label="Zoom Out"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleFitAllToScreen}
+            className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200 cursor-pointer"
+            title="Fit All Components to Viewport"
+            aria-label="Fit View"
+          >
+            <Focus className="w-4 h-4 text-cyan-400" />
+          </button>
+          <button
+            onClick={() => {
+              setZoom(1.0);
+              setPan({ x: 40, y: 30 });
+            }}
+            className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200 cursor-pointer"
+            title="Reset View 100%"
+            aria-label="Reset View"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <span className="text-[11px] font-mono px-1.5 text-slate-400">
+            {Math.round(zoom * 100)}%
+          </span>
+          <div className="w-px h-4 bg-slate-800 mx-0.5" />
+          <button
+            onClick={() => setSnapToGrid(!snapToGrid)}
+            className={`p-1.5 rounded transition-colors cursor-pointer ${
+              snapToGrid
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
+                : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+            title={snapToGrid ? 'Snap to Grid: ON (20px)' : 'Snap to Grid: OFF'}
+            aria-label="Toggle Grid Snapping"
+          >
+            <Grid className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Zen Mode Toggle (Maximizes Mobile Screen Space) */}
+      <div className="absolute top-4 right-4 z-30">
         <button
-          onClick={() => zoomByFactor(1.16)}
-          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
-          title="Zoom In"
-          aria-label="Zoom In"
+          onClick={() => setIsZenMode(!isZenMode)}
+          className="flex items-center gap-1.5 bg-slate-900/90 backdrop-blur border border-slate-800 hover:border-cyan-500/50 text-slate-300 hover:text-white px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xl transition-all cursor-pointer"
+          title={isZenMode ? 'Show CAD Toolbars' : 'Zen View: Fullscreen space for mobile'}
         >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => zoomByFactor(1 / 1.16)}
-          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
-          title="Zoom Out"
-          aria-label="Zoom Out"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <button
-          onClick={resetView}
-          className="p-1.5 hover:bg-slate-800 rounded transition-colors text-slate-200"
-          title="Reset View"
-          aria-label="Reset View"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
-        <span className="text-[11px] font-mono px-2 text-slate-400">
-          {Math.round(zoom * 100)}%
-        </span>
-        <div className="w-px h-4 bg-slate-800 mx-0.5" />
-        <button
-          onClick={() => setSnapToGrid(!snapToGrid)}
-          className={`p-1.5 rounded transition-colors ${
-            snapToGrid
-              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
-              : 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
-          }`}
-          title={snapToGrid ? 'Snap to Grid: ON (20px)' : 'Snap to Grid: OFF'}
-          aria-label="Toggle Grid Snapping"
-        >
-          <Grid className="w-4 h-4" />
+          {isZenMode ? <Eye className="w-3.5 h-3.5 text-cyan-400" /> : <EyeOff className="w-3.5 h-3.5" />}
+          <span className="hidden sm:inline">{isZenMode ? 'Open Controls' : 'Zen View'}</span>
         </button>
       </div>
 
-      {/* Selected Component Transform Floating Gizmo */}
-      {selectedCompId && (() => {
+      {/* Selected Component Quick Transform Bar */}
+      {selectedCompId && !isZenMode && (() => {
         const selectedComp = project.components.find((c) => c.id === selectedCompId);
         if (!selectedComp) return null;
         const currentRotation = selectedComp.rotation || 0;
         const currentScale = selectedComp.scale || 1.0;
 
         return (
-          <div data-ui-overlay className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-slate-900/95 backdrop-blur border border-cyan-500/50 text-slate-200 px-3.5 py-1.5 rounded-xl shadow-2xl text-xs animate-in fade-in">
-            <div className="flex items-center gap-1.5 border-r border-slate-700/80 pr-2.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="font-semibold text-white truncate max-w-[120px]">{selectedComp.name}</span>
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center justify-center gap-2 bg-slate-900/95 backdrop-blur border border-cyan-500/50 text-slate-200 px-3.5 py-1.5 rounded-2xl shadow-2xl text-xs">
+            <div className="flex items-center gap-1.5 border-r border-slate-700/80 pr-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="font-semibold text-white truncate max-w-[140px]">{selectedComp.name}</span>
             </div>
 
             {/* Rotate Clockwise 90deg */}
@@ -602,46 +590,64 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                 const nextRot = ((selectedComp.rotation || 0) + 90) % 360;
                 onUpdateComponentTransform?.(selectedComp.id, { rotation: nextRot });
               }}
-              className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-1 rounded transition-colors cursor-pointer"
+              className="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 px-2.5 py-1 rounded-lg transition-colors cursor-pointer text-xs"
               title="Rotate 90° Clockwise"
             >
               <RotateCw className="w-3.5 h-3.5 text-cyan-400" />
               <span className="font-mono text-[11px]">{currentRotation}°</span>
             </button>
 
-            {/* Scale Slider */}
-            <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-0.5 rounded border border-slate-800">
-              <span className="text-[10px] text-slate-400 font-mono">Scale:</span>
-              <input
-                type="range"
-                min="0.6"
-                max="1.8"
-                step="0.1"
-                value={currentScale}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value);
-                  onUpdateComponentTransform?.(selectedComp.id, { scale: val });
+            {/* Scale +/- Buttons for Easy Touch Scaling */}
+            <div className="flex items-center gap-1 bg-slate-950 px-1 py-0.5 rounded-lg border border-slate-800">
+              <button
+                onClick={() => {
+                  const next = Math.max(0.5, Math.round((currentScale - 0.1) * 10) / 10);
+                  onUpdateComponentTransform?.(selectedComp.id, { scale: next });
                 }}
-                className="w-16 accent-cyan-400 cursor-pointer h-1"
-                title={`Scale: ${currentScale.toFixed(1)}x`}
-              />
-              <span className="font-mono text-[10px] text-cyan-300 w-7 text-right">
+                className="w-6 h-6 flex items-center justify-center hover:bg-slate-800 rounded text-slate-300 hover:text-white font-bold cursor-pointer"
+                title="Scale Down (-10%)"
+              >
+                -
+              </button>
+              <span className="font-mono text-[11px] text-cyan-300 px-1">
                 {currentScale.toFixed(1)}x
               </span>
+              <button
+                onClick={() => {
+                  const next = Math.min(2.5, Math.round((currentScale + 0.1) * 10) / 10);
+                  onUpdateComponentTransform?.(selectedComp.id, { scale: next });
+                }}
+                className="w-6 h-6 flex items-center justify-center hover:bg-slate-800 rounded text-slate-300 hover:text-white font-bold cursor-pointer"
+                title="Scale Up (+10%)"
+              >
+                +
+              </button>
             </div>
 
-            {/* Reset Transform */}
+            {/* Reset Scale & Rotation */}
             {(currentRotation !== 0 || currentScale !== 1.0) && (
               <button
                 onClick={() => {
                   onUpdateComponentTransform?.(selectedComp.id, { rotation: 0, scale: 1.0 });
                 }}
-                className="text-[10px] font-mono text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-800 transition-colors cursor-pointer"
+                className="text-[10px] font-mono text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 transition-colors cursor-pointer"
                 title="Reset Transform to 0° 1.0x"
               >
                 Reset
               </button>
             )}
+
+            {/* Delete Component Button */}
+            <button
+              onClick={() => {
+                onRemoveComponent(selectedComp.id);
+                setSelectedCompId(null);
+              }}
+              className="p-1.5 text-rose-400 hover:text-white hover:bg-rose-950/80 rounded-lg transition-colors cursor-pointer"
+              title="Remove Component"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
 
             {/* Close Gizmo */}
             <button
@@ -657,14 +663,14 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
 
       {/* Wire Connection Helper Banner */}
       {pendingWire && (
-        <div data-ui-overlay className="absolute top-4 right-4 z-30 flex items-center gap-3 bg-cyan-950/95 border border-cyan-500/50 text-cyan-200 px-4 py-2 rounded-lg shadow-2xl text-xs animate-bounce">
-          <Sparkles className="w-4 h-4 text-cyan-400" />
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 bg-cyan-950/95 border border-cyan-500 text-cyan-200 px-4 py-2 rounded-xl shadow-2xl text-xs">
+          <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
           <span>
-            Connecting wire from <strong className="text-white">{pendingWire.fromPinName}</strong>. Click any target pin to attach.
+            Connecting from <strong className="text-white">{pendingWire.fromPinName}</strong>. Tap any target pin to attach wire.
           </span>
           <button
             onClick={() => setPendingWire(null)}
-            className="p-1 hover:bg-cyan-900 rounded text-cyan-400 hover:text-white"
+            className="p-1 hover:bg-cyan-900 rounded text-cyan-400 hover:text-white cursor-pointer"
             title="Cancel wire"
           >
             <X className="w-4 h-4" />
@@ -673,92 +679,83 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
       )}
 
       {/* Selected Wire Inspector Bar */}
-      {selectedWireId && (
-        <div data-ui-overlay className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-200 px-4 py-2.5 rounded-xl shadow-2xl text-xs">
+      {selectedWireId && !isZenMode && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 bg-slate-900/95 backdrop-blur border border-slate-700 text-slate-200 px-4 py-2 rounded-xl shadow-2xl text-xs">
           <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full border border-white/20" style={{
-              backgroundColor: project.wires.find((w) => w.id === selectedWireId)?.color || '#38bdf8'
-            }} />
+            <span
+              className="w-3 h-3 rounded-full border border-white/20 shrink-0"
+              style={{
+                backgroundColor: project.wires.find((w) => w.id === selectedWireId)?.color || '#38bdf8'
+              }}
+            />
             <span className="font-semibold text-white">
               Net: {project.wires.find((w) => w.id === selectedWireId)?.netName || selectedWireId}
             </span>
-            <span className="text-slate-400 font-mono">
-              ({project.wires.find((w) => w.id === selectedWireId)?.gauge}, {project.wires.find((w) => w.id === selectedWireId)?.lengthMm}mm)
+            <span className="text-slate-400 font-mono text-[11px]">
+              ({project.wires.find((w) => w.id === selectedWireId)?.wireType})
             </span>
           </div>
 
-          <button
-            onClick={() => {
-              onDeleteWire(selectedWireId);
-              setSelectedWireId(null);
-            }}
-            className="flex items-center gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-950/60 px-2.5 py-1 rounded border border-rose-900/60 transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Delete Wire</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                onDeleteWire(selectedWireId);
+                setSelectedWireId(null);
+              }}
+              className="flex items-center gap-1 text-rose-400 hover:text-white bg-rose-950/60 hover:bg-rose-900 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Wire</span>
+            </button>
 
-          <button
-            onClick={() => setSelectedWireId(null)}
-            className="text-slate-400 hover:text-white"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+            <button
+              onClick={() => setSelectedWireId(null)}
+              className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Main Pan/Zoom Canvas Wrapper */}
+      {/* Transformable Canvas World Container */}
       <div
-        className="w-full h-full origin-top-left"
         style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          transformOrigin: '0 0'
         }}
+        className="absolute inset-0 pointer-events-none"
       >
-        {/* SVG Wire Layer */}
-        <svg
-          className="absolute inset-0 w-[4000px] h-[3000px] pointer-events-none z-10"
-          style={{ overflow: 'visible' }}
-        >
+        {/* SVG Bezier Wire Layer */}
+        <svg className="absolute inset-0 w-[5000px] h-[4000px] pointer-events-none overflow-visible">
           <defs>
             <filter id="wire-glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
+              <feGaussianBlur stdDeviation="2.5" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
             </filter>
           </defs>
 
-          {/* Existing Wires */}
+          {/* Render Wire Harness Connections */}
           {project.wires.map((wire) => {
             const start = getPinCoordinate(wire.fromComponentId, wire.fromPinId);
             const end = getPinCoordinate(wire.toComponentId, wire.toPinId);
             const isSelected = wire.id === selectedWireId;
 
-            // Compute smooth Bezier Control Points
             const dx = Math.abs(end.x - start.x) * 0.55;
             const pathData = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
-
             const strokeWidth = wire.gauge === '22AWG' ? 4 : wire.gauge === 'FPC-Ribbon' ? 5 : 2.5;
 
             return (
               <g
                 key={wire.id}
-                data-wire={wire.id}
                 className="cursor-pointer pointer-events-auto"
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedWireId(wire.id);
                 }}
               >
-                {/* Thick invisible hit area for easy clicking */}
-                <path
-                  d={pathData}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={14}
-                />
-                {/* Outer Glow when selected */}
+                {/* Thick hit area for easy touch / mouse clicking */}
+                <path d={pathData} fill="none" stroke="transparent" strokeWidth={18} />
                 {isSelected && (
                   <path
                     d={pathData}
@@ -768,7 +765,6 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                     opacity={0.4}
                   />
                 )}
-                {/* Visible Wire Body */}
                 <path
                   d={pathData}
                   fill="none"
@@ -779,7 +775,6 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                   opacity={isSelected ? 1.0 : 0.85}
                   strokeDasharray={wire.wireType === 'i2c' ? '6 3' : wire.wireType === 'spi' ? '8 2' : 'none'}
                 />
-                {/* Pin solder points */}
                 <circle cx={start.x} cy={start.y} r={4.5} fill={wire.color} stroke="#020617" strokeWidth={1.5} />
                 <circle cx={end.x} cy={end.y} r={4.5} fill={wire.color} stroke="#020617" strokeWidth={1.5} />
               </g>
@@ -794,24 +789,17 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
               stroke="#38bdf8"
               strokeWidth={3}
               strokeDasharray="4 4"
-              className="animate-pulse"
             />
           )}
         </svg>
 
         {/* --- MCU Board Node --- */}
         <div
-          data-mcu
           style={{
             transform: `translate(${mcuPos.x}px, ${mcuPos.y}px)`,
             width: '280px'
           }}
-          className={`absolute z-20 bg-slate-900/95 border-2 rounded-2xl shadow-2xl shadow-cyan-950/50 backdrop-blur p-4 cursor-move touch-none transition-shadow ${
-            draggingCompId === 'mcu'
-              ? 'border-cyan-400 ring-2 ring-cyan-400/40'
-              : 'border-cyan-500/80 hover:border-cyan-400'
-          }`}
-          title="Drag the board to reposition it"
+          className="absolute z-20 bg-slate-900/95 border-2 border-cyan-500/80 rounded-2xl shadow-2xl shadow-cyan-950/50 backdrop-blur p-4 pointer-events-auto"
         >
           {/* MCU Header */}
           <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
@@ -852,12 +840,12 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                     onClick={(e) => handlePinClick('mcu', pin, e)}
                     onMouseEnter={() => setHoveredPin({ pin, compName: project.mcu.name, x: mcuPos.x, y: mcuPos.y })}
                     onMouseLeave={() => setHoveredPin(null)}
-                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 active:scale-95 ${getPinSignalColor(
                       pin
                     )} hover:ring-2 hover:ring-cyan-400`}
                   >
                     <span className="truncate">{pin.name}</span>
-                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200" />
+                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200 shrink-0 ml-1" />
                   </div>
                 ))}
             </div>
@@ -873,11 +861,11 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                     onClick={(e) => handlePinClick('mcu', pin, e)}
                     onMouseEnter={() => setHoveredPin({ pin, compName: project.mcu.name, x: mcuPos.x + 280, y: mcuPos.y })}
                     onMouseLeave={() => setHoveredPin(null)}
-                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                    className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[10px] cursor-pointer transition-all hover:scale-105 active:scale-95 ${getPinSignalColor(
                       pin
                     )} hover:ring-2 hover:ring-cyan-400`}
                   >
-                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200" />
+                    <span className="w-2 h-2 rounded-full bg-cyan-400/80 ring-1 ring-cyan-200 shrink-0 mr-1" />
                     <span className="truncate">{pin.name}</span>
                   </div>
                 ))}
@@ -885,7 +873,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
           </div>
         </div>
 
-        {/* --- Draggable Modular Components --- */}
+        {/* --- Draggable & Scalable Modular Components --- */}
         {project.components.map((comp) => {
           const compWidth = comp.width || 240;
           const rotation = comp.rotation || 0;
@@ -905,25 +893,36 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                 isSelected
                   ? 'border-cyan-400 ring-2 ring-cyan-500/50 shadow-2xl shadow-cyan-950/80'
                   : 'border-slate-700/80 hover:border-slate-500 shadow-xl'
-              } rounded-xl backdrop-blur p-3 cursor-move transition-shadow select-none touch-none`}
+              } rounded-2xl backdrop-blur p-3 cursor-move transition-shadow select-none pointer-events-auto touch-none`}
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedCompId(comp.id);
               }}
+              onMouseDown={(e) => {
+                if ((e.target as HTMLElement).tagName !== 'BUTTON' && !(e.target as HTMLElement).closest('[data-pin]')) {
+                  const coords = getCanvasCoords(e.clientX, e.clientY);
+                  setSelectedCompId(comp.id);
+                  setDraggingCompId(comp.id);
+                  setDragOffset({ x: coords.x - comp.x, y: coords.y - comp.y });
+                }
+              }}
             >
-              {/* Component Header */}
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+              {/* Component Header / Drag Handle */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2 cursor-grab active:cursor-grabbing">
                 <div className="flex items-center gap-1.5 truncate">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <Move className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
                   <h4 className="font-semibold text-xs text-white truncate">{comp.name}</h4>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
                     {comp.protocol}
                   </span>
                   <button
-                    onClick={() => onRemoveComponent(comp.id)}
-                    className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemoveComponent(comp.id);
+                    }}
+                    className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors cursor-pointer"
                     title="Remove module"
                     aria-label={`Remove module ${comp.name}`}
                   >
@@ -933,7 +932,7 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
               </div>
 
               {/* Protocol & Power Info */}
-              <div className="flex items-center justify-between text-[10px] text-slate-400 mb-3 px-1">
+              <div className="flex items-center justify-between text-[10px] text-slate-400 mb-2.5 px-1">
                 <span>{comp.operatingVoltage}</span>
                 <span className="font-mono text-cyan-300">{comp.powerCurrentActiveMa}mA</span>
               </div>
@@ -950,12 +949,12 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                         onClick={(e) => handlePinClick(comp.id, pin, e)}
                         onMouseEnter={() => setHoveredPin({ pin, compName: comp.name, x: comp.x, y: comp.y })}
                         onMouseLeave={() => setHoveredPin(null)}
-                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 active:scale-95 ${getPinSignalColor(
                           pin
                         )} hover:ring-2 hover:ring-emerald-400`}
                       >
                         <span className="truncate">{pin.name}</span>
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 ml-1" />
                       </div>
                     ))}
                 </div>
@@ -970,64 +969,54 @@ export const SchematicCanvas: React.FC<SchematicCanvasProps> = ({
                         onClick={(e) => handlePinClick(comp.id, pin, e)}
                         onMouseEnter={() => setHoveredPin({ pin, compName: comp.name, x: comp.x + compWidth, y: comp.y })}
                         onMouseLeave={() => setHoveredPin(null)}
-                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 ${getPinSignalColor(
+                        className={`flex items-center justify-between px-2 py-1 rounded font-mono text-[9px] cursor-pointer transition-all hover:scale-105 active:scale-95 ${getPinSignalColor(
                           pin
                         )} hover:ring-2 hover:ring-emerald-400`}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0 mr-1" />
                         <span className="truncate">{pin.name}</span>
                       </div>
                     ))}
                 </div>
               </div>
 
-              {/* Touch / mouse resize handle */}
+              {/* Interactive Corner Resize Handle for Tactile Scaling */}
               {isSelected && (
-                <button
-                  type="button"
-                  data-scale-handle
-                  onClick={(event) => event.stopPropagation()}
-                  className="absolute -bottom-3 -right-3 w-8 h-8 rounded-full bg-cyan-500 text-slate-950 border-2 border-slate-950 shadow-lg shadow-cyan-500/40 flex items-center justify-center cursor-nwse-resize touch-none z-30 hover:bg-cyan-400 active:scale-95 transition-transform"
-                  title="Drag to scale component"
-                  aria-label={`Scale ${comp.name}`}
+                <div
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const coords = getCanvasCoords(e.clientX, e.clientY);
+                    const compHeight = comp.height || 140;
+                    const centerX = comp.x + compWidth / 2;
+                    const centerY = comp.y + compHeight / 2;
+                    setInitialResizeDist(Math.hypot(coords.x - centerX, coords.y - centerY));
+                    setInitialResizeScale(comp.scale || 1.0);
+                    setResizingCompId(comp.id);
+                  }}
+                  className="absolute -bottom-2 -right-2 w-5 h-5 bg-cyan-500 hover:bg-cyan-400 border-2 border-white rounded-full cursor-nwse-resize shadow-md flex items-center justify-center pointer-events-auto"
+                  title="Drag to scale module size"
                 >
-                  <Maximize2 className="w-3.5 h-3.5" />
-                </button>
+                  <Maximize2 className="w-2.5 h-2.5 text-black" />
+                </div>
               )}
             </div>
           );
         })}
       </div>
 
-      {/* Gesture Hint */}
-      <div data-ui-overlay className="hidden md:flex absolute bottom-4 left-4 z-20 items-center gap-2 bg-slate-950/80 backdrop-blur border border-slate-800 rounded-lg px-3 py-1.5 text-[10px] text-slate-400 font-mono pointer-events-none">
-        <Move className="w-3.5 h-3.5 text-cyan-400" />
-        <span>Drag to move</span>
-        <span className="text-slate-700">•</span>
-        <span>Pinch / wheel to zoom</span>
-        <span className="text-slate-700">•</span>
-        <span>Corner handle to resize</span>
-      </div>
-
       {/* Pin Hover Tooltip Card */}
-      {hoveredPin && (
-        <div data-ui-overlay className="absolute bottom-6 right-6 z-40 bg-slate-900/95 border border-slate-700 p-3 rounded-xl shadow-2xl text-xs max-w-xs pointer-events-none backdrop-blur">
-          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5 mb-2">
+      {hoveredPin && !isZenMode && (
+        <div className="absolute bottom-4 left-4 z-30 bg-slate-900/95 border border-slate-700 p-2.5 rounded-xl shadow-2xl text-xs space-y-1 max-w-xs pointer-events-none">
+          <div className="flex items-center justify-between">
             <span className="font-bold text-white">{hoveredPin.pin.name}</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
-              {hoveredPin.pin.voltageDomain}
-            </span>
+            <span className="font-mono text-[10px] text-cyan-400">{hoveredPin.compName}</span>
           </div>
-          <p className="text-[11px] text-slate-300 mb-1">
-            <strong>Device:</strong> {hoveredPin.compName}
-          </p>
-          <p className="text-[11px] text-slate-400 mb-1">
-            <strong>Signals:</strong> {hoveredPin.pin.supportedSignals.join(', ')}
-          </p>
+          <div className="text-[10px] text-slate-300 font-mono">
+            Voltage: <strong className="text-white">{hoveredPin.pin.voltageDomain}</strong> | Signals: {hoveredPin.pin.supportedSignals.join(', ')}
+          </div>
           {hoveredPin.pin.isStrappingPin && (
-            <div className="flex items-start gap-1.5 text-amber-300 bg-amber-950/60 p-1.5 rounded border border-amber-800/80 mt-1.5 text-[10px]">
-              <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
-              <span>{hoveredPin.pin.strappingNote || 'Boot strapping pin! Check default pull state.'}</span>
+            <div className="text-[10px] text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-800">
+              ⚠️ {hoveredPin.pin.strappingNote || 'Boot strapping pin'}
             </div>
           )}
         </div>

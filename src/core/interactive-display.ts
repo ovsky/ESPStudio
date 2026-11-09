@@ -129,16 +129,26 @@ export function handleDisplayTouch(
       serialEvent = `[LIGHT_UI] Switched Pattern: ${nextState.touchScreenState.lightMatrixMode.toUpperCase()}`;
     }
 
-    // Color swatches (Y: 120 to 160)
-    const swatches = ['#38bdf8', '#ec4899', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#ffffff'];
-    swatches.forEach((col, idx) => {
-      const cx = 40 + idx * 65;
-      if (x >= cx && x <= cx + 55 && y >= 115 && y <= 165) {
-        nextState.touchScreenState.selectedLightColor = col;
-        nextState.ws2812Colors = nextState.ws2812Colors.map(() => col);
-        serialEvent = `[LIGHT_UI] Color Palette Selected: ${col}`;
+    // Pattern Mode cards or Color swatches (Y: 120 to 165)
+    if (y >= 120 && y <= 165) {
+      if (x >= 80 && x <= 160) {
+        nextState.touchScreenState.lightMatrixMode = 'rainbow';
+        serialEvent = `[LIGHT_UI] Switched Pattern: RAINBOW`;
+      } else if (x >= 200 && x <= 290) {
+        nextState.touchScreenState.lightMatrixMode = 'breathing';
+        serialEvent = `[LIGHT_UI] Switched Pattern: BREATHING`;
+      } else {
+        const swatches = ['#38bdf8', '#ec4899', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#ffffff'];
+        swatches.forEach((col, idx) => {
+          const cx = 40 + idx * 65;
+          if (x >= cx && x <= cx + 55 && y >= 115 && y <= 165) {
+            nextState.touchScreenState.selectedLightColor = col;
+            nextState.ws2812Colors = nextState.ws2812Colors.map(() => col);
+            serialEvent = `[LIGHT_UI] Color Palette Selected: ${col}`;
+          }
+        });
       }
-    });
+    }
 
     // Dual Relay Toggles (Y: 230 to 290)
     if (y >= 230 && y <= 290) {

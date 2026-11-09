@@ -6,10 +6,14 @@ export type McuFamily =
   | 'ESP32-S3'
   | 'ESP32-P4'
   | 'ESP32-C6'
-  | 'ESP32-C5'
   | 'ESP32-C3'
-  | 'ESP32-S2'
   | 'ESP32-Classic'
+  | 'ESP32-C3-SuperMini'
+  | 'Seeed-Xiao-ESP32S3'
+  | 'ESP32-WROOM-32D'
+  | 'Teensy-4.1'
+  | 'Raspberry-Pi-5'
+  | 'Heltec-WiFi-LoRa32-V3'
   | 'Arduino-Uno-R4'
   | 'Arduino-Giga-R1'
   | 'Radxa-Zero-3W'
@@ -105,6 +109,9 @@ export interface ComponentModule {
   y: number;
   width?: number;
   height?: number;
+  cadX?: number; // 3D CAD position offset in mm/units
+  cadY?: number;
+  cadZ?: number;
   rotation?: number; // 0, 90, 180, 270 degrees
   scale?: number; // 0.5 to 2.5 multiplier
   estimatedCostUsd: number;
@@ -143,7 +150,7 @@ export interface VirtualHardwareState {
     lastTouchX: number;
     lastTouchY: number;
     phoneDialBuffer: string;
-    lightMatrixMode: 'solid' | 'neon' | 'aurora' | 'rainbow' | 'strobe';
+    lightMatrixMode: 'solid' | 'neon' | 'aurora' | 'rainbow' | 'strobe' | 'breathing';
     lightBrightness: number;
     selectedLightColor: string;
     cameraObjectDetected?: string;
@@ -162,7 +169,7 @@ export type WireType =
   | 'analog'
   | 'rf';
 
-export type WireGauge = '28AWG' | '26AWG' | '24AWG' | '22AWG' | 'FPC-Ribbon';
+export type WireGauge = '30AWG' | '28AWG' | '26AWG' | '24AWG' | '22AWG' | 'FPC-Ribbon';
 
 export interface WireConnection {
   id: string;
