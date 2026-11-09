@@ -8,6 +8,12 @@
 [![Platform](https://img.shields.io/badge/platforms-Web%20|%20Android%20|%20PC-emerald.svg)](capacitor.config.json)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+<p align="center">
+  <img src="893144375_1854719729057608_7651302544980183340_n.png" alt="ESP-Forge Studio — generated render" width="800">
+  <img src="894539969_1127057046901808_6314249589770141727_n.png" alt="ESP-Forge Studio — screenshot" width="800">
+  <img src="Gemini_Generated_Image_zaqugmzaqugmzaqu.jpg" alt="ESP-Forge Studio — generated image" width="800">
+</p>
+
 ---
 
 ## 🎯 Overview
