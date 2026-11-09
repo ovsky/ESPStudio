@@ -43,11 +43,11 @@ export function createInitialHardwareState(project: DeviceProject): VirtualHardw
     modemConnected: true,
     batteryMillivolts: 4120,
     touchScreenState: {
-      activeApp: project.id.includes('phone') ? 'phone' : project.id.includes('light') ? 'matrix' : project.id.includes('vision') ? 'vision' : 'launcher',
+      activeApp: 'launcher',
       touchPressed: false,
       lastTouchX: 240,
       lastTouchY: 160,
-      phoneDialBuffer: '555-0199',
+      phoneDialBuffer: '',
       lightMatrixMode: 'neon',
       lightBrightness: 85,
       selectedLightColor: '#38bdf8',
@@ -86,7 +86,7 @@ export function generateBootloaderLogs(project: DeviceProject): SerialLogEntry[]
     add(`Loading kernel image /boot/vmlinuz-6.1-rockchip... [OK]`, 'boot');
     add(`[    0.000000] Linux version 6.1.43-rockchip (Debian GNU/Linux 12 bookworm)`, 'boot');
     add(`[    0.142010] CPU: ${project.mcu.cpuArchitecture} with ${project.mcu.cores} active cores`, 'boot');
-    add(`[    0.412890] NPU: Rockchip RKNN Neural Processing Engine loaded (6 TOPS capability)`, 'boot');
+    add(`[    0.412890] NPU Core: Rockchip RKNN Neural Processing Engine loaded (6 TOPS capability)`, 'boot');
     add(`[    0.851020] systemd[1]: Reached target Basic System & Network Interfaces.`, 'boot');
     add(`[    1.210450] systemd[1]: Started ESP-Forge Hardware Daemon (${project.name}).`, 'info');
     project.components.forEach((comp) => {

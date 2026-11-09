@@ -4,6 +4,7 @@ import { DeviceProject, PowerBudgetSummary, WireGauge } from '../types/hardware'
  * Approximate resistance per meter in Ohms at 20C for copper stranded hookup wire.
  */
 const WIRE_RESISTANCE_OHM_PER_METER: Record<WireGauge, number> = {
+  '30AWG': 0.338,
   '28AWG': 0.213,
   '26AWG': 0.134,
   '24AWG': 0.084,
